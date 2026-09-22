@@ -1,0 +1,74 @@
+version: "3.8"
+
+services:
+  mongodb:
+    image: mongo:6.0
+    container_name: movie_streaming_mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - movie_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: movie_streaming_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - movie_network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: movie_streaming_api
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - MONGODB_URI=mongodb://mongodb:27017/movie_streaming_db
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=super_secret_jwt_key_movie_upload_dashboard_2026_change_in_prod
+      - ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - STREAMING_BASE_URL=http://localhost:5000/stream
+      - INITIAL_ADMIN_EMAIL=admin@movieplatform.com
+      - INITIAL_ADMIN_PASSWORD=AdminSecurePassword123!
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - movie_network
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: movie_streaming_worker
+    restart: unless-stopped
+    command: ["node", "dist/workers/index.js"]
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongodb:27017/movie_streaming_db
+      - REDIS_URL=redis://redis:6379
+      - ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - movie_network
+
+volumes:
+  mongo_data:
+  redis_data:
+
+networks:
+  movie_network:
+    driver: bridge
