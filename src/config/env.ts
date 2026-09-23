@@ -22,7 +22,9 @@ const envSchema = z.object({
   FFMPEG_PATH: z.string().optional(),
   FFPROBE_PATH: z.string().optional(),
   RATE_LIMIT_WINDOW_MS: z.string().transform(Number).default("900000"),
-  RATE_LIMIT_MAX: z.string().transform(Number).default("1000")
+  RATE_LIMIT_MAX: z.string().transform(Number).default("1000"),
+  TMDB_API_KEY: z.string().default("aae5cb72f79e10ebd2574fb359a3ee6a"),
+  TMDB_READ_ACCESS_TOKEN: z.string().optional()
 });
 
 const parsed = envSchema.safeParse(process.env);

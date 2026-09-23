@@ -124,5 +124,48 @@ export class UploadController {
       next(error);
     }
   }
+
+  public static async initRemoteDownload(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { RemoteDownloadService } = await import("./remote-download.service");
+      const result = await RemoteDownloadService.initRemoteDownload(req.body);
+
+      await AuditService.record({
+        adminId: req.admin?.adminId,
+        action: "REMOTE_DOWNLOAD_STARTED" as any,
+        resourceType: "UPLOAD",
+        resourceId: result.uploadSessionId,
+        metadata: {
+          url: req.body.url,
+          fileName: result.fileName,
+          fileSize: result.fileSize
+        },
+        ipAddress: req.ip
+      });
+
+      sendSuccess(res, result, "Remote URL download initiated successfully", 201);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public static async cancelRemoteDownload(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { RemoteDownloadService } = await import("./remote-download.service");
+      const session = await RemoteDownloadService.cancelRemoteDownload(req.params.id);
+
+      await AuditService.record({
+        adminId: req.admin?.adminId,
+        action: "REMOTE_DOWNLOAD_CANCELLED" as any,
+        resourceType: "UPLOAD",
+        resourceId: session._id.toString(),
+        ipAddress: req.ip
+      });
+
+      sendSuccess(res, session, "Remote download cancelled successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 

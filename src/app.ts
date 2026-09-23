@@ -7,6 +7,7 @@ import storageRoutes from "./modules/storage/storage.routes";
 import uploadRoutes from "./modules/upload/upload.routes";
 import movieRoutes from "./modules/movies/movie.routes";
 import publicMovieRoutes from "./modules/movies/public-movie.routes";
+import tmdbRoutes from "./modules/tmdb/tmdb.routes";
 import { setupSwagger } from "./config/swagger";
 import { errorHandler } from "./middleware/error.middleware";
 import { apiRateLimiter, authRateLimiter } from "./middleware/rate-limit.middleware";
@@ -56,6 +57,7 @@ export function createApp(): Express {
   app.use("/api/admin/storage", storageRoutes);
   app.use("/api/admin/uploads", uploadRoutes);
   app.use("/api/admin/movies", movieRoutes);
+  app.use("/api/admin/tmdb", tmdbRoutes);
   app.use("/api/movies", publicMovieRoutes);
 
   // 404 Handler

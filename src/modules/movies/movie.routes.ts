@@ -22,4 +22,10 @@ router.post("/:id/process", MovieController.process);
 router.post("/:id/reprocess", MovieController.reprocess);
 router.get("/:id/status", MovieController.getStatus);
 
+// Series Season & Episode Routes
+router.post("/:id/episodes", MovieController.addEpisode);
+router.patch("/:id/episodes/:episodeId", MovieController.updateEpisode);
+router.delete("/:id/episodes/:episodeId", MovieController.deleteEpisode);
+router.post("/:id/seasons/import-tmdb", MovieController.importTmdbEpisodes);
+
 export default router;

@@ -6,7 +6,8 @@ import {
   initUploadSchema,
   completeUploadSchema,
   getPartUrlsSchema,
-  abortUploadSchema
+  abortUploadSchema,
+  initRemoteDownloadSchema
 } from "./upload.validation";
 
 const router = Router();
@@ -14,6 +15,8 @@ const router = Router();
 router.use(authenticateAdmin);
 
 router.post("/init", validateRequest(initUploadSchema), UploadController.init);
+router.post("/remote-url", validateRequest(initRemoteDownloadSchema), UploadController.initRemoteDownload);
+router.post("/remote-url/:id/cancel", UploadController.cancelRemoteDownload);
 router.get("/:id/part-urls", validateRequest(getPartUrlsSchema), UploadController.getPartUrls);
 router.put(
   "/:id/part/:partNumber",
@@ -28,6 +31,5 @@ router.put(
 router.post("/:id/complete", validateRequest(completeUploadSchema), UploadController.complete);
 router.post("/:id/abort", validateRequest(abortUploadSchema), UploadController.abort);
 router.get("/:id", UploadController.getById);
-
 
 export default router;

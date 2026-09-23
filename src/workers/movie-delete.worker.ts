@@ -4,6 +4,7 @@ import { MOVIE_DELETE_QUEUE_NAME, MovieDeleteJobData } from "../modules/processi
 import { StorageAccount } from "../modules/storage/storage.model";
 import { Movie } from "../modules/movies/movie.model";
 import { R2Service } from "../modules/storage/r2.service";
+import { StorageManagerService } from "../services/storage-manager.service";
 import { logger } from "../utils/logger";
 
 export const movieDeleteWorker = new Worker<MovieDeleteJobData>(
@@ -42,13 +43,11 @@ export const movieDeleteWorker = new Worker<MovieDeleteJobData>(
       }
     }
 
-    // 3. Update storage usage in account
-    if (freedBytes > 0) {
-      storageAccount.usedStorageBytes = Math.max(0, storageAccount.usedStorageBytes - freedBytes);
-      if (storageAccount.status === "FULL" && storageAccount.usedStorageBytes < storageAccount.maxStorageBytes) {
-        storageAccount.status = "ACTIVE";
-      }
-      await storageAccount.save();
+    // 3. Update storage usage in account with real-time recalculation from R2
+    try {
+      await StorageManagerService.recalculateStorageUsage(storageAccount._id);
+    } catch (recalcErr) {
+      logger.warn({ err: recalcErr, storageAccountId }, "Failed to recalculate R2 storage in delete worker");
     }
 
     // 4. Delete MongoDB record

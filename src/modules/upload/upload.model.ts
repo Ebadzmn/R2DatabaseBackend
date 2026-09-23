@@ -2,6 +2,7 @@ import { Schema, model, Document, Types } from "mongoose";
 
 export type UploadStatus =
   | "INITIALIZED"
+  | "DOWNLOADING"
   | "UPLOADING"
   | "COMPLETING"
   | "UPLOADED"
@@ -13,6 +14,9 @@ export type UploadStatus =
 export interface IUploadSession extends Document {
   _id: Types.ObjectId;
   movieId?: Types.ObjectId;
+  episodeId?: Types.ObjectId;
+  seasonNumber?: number;
+  episodeNumber?: number;
   storageAccountId: Types.ObjectId;
   objectKey: string;
   fileName: string;
@@ -21,6 +25,10 @@ export interface IUploadSession extends Document {
   status: UploadStatus;
   uploadedBytes: number;
   progress: number;
+  sourceType?: "LOCAL_FILE" | "REMOTE_URL";
+  remoteUrl?: string;
+  downloadSpeedBytesPerSec?: number;
+  etaSeconds?: number;
   error?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -29,6 +37,9 @@ export interface IUploadSession extends Document {
 const uploadSessionSchema = new Schema<IUploadSession>(
   {
     movieId: { type: Schema.Types.ObjectId, ref: "Movie" },
+    episodeId: { type: Schema.Types.ObjectId },
+    seasonNumber: { type: Number },
+    episodeNumber: { type: Number },
     storageAccountId: { type: Schema.Types.ObjectId, ref: "StorageAccount", required: true },
     objectKey: { type: String, required: true },
     fileName: { type: String, required: true },
@@ -38,6 +49,7 @@ const uploadSessionSchema = new Schema<IUploadSession>(
       type: String,
       enum: [
         "INITIALIZED",
+        "DOWNLOADING",
         "UPLOADING",
         "COMPLETING",
         "UPLOADED",
@@ -51,6 +63,10 @@ const uploadSessionSchema = new Schema<IUploadSession>(
     },
     uploadedBytes: { type: Number, default: 0 },
     progress: { type: Number, default: 0 },
+    sourceType: { type: String, enum: ["LOCAL_FILE", "REMOTE_URL"], default: "LOCAL_FILE" },
+    remoteUrl: { type: String },
+    downloadSpeedBytesPerSec: { type: Number, default: 0 },
+    etaSeconds: { type: Number },
     error: { type: String }
   },
   {

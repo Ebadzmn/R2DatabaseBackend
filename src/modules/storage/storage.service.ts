@@ -8,10 +8,32 @@ import { logger } from "../../utils/logger";
 
 export class StorageService {
   /**
-   * Retrieves all storage accounts with computed capacity metrics
+   * Retrieves all storage accounts with computed capacity metrics and real-time auto-sync
    */
   public static async getAll(): Promise<any[]> {
     const accounts = await StorageAccount.find().sort({ priority: 1, createdAt: 1 });
+
+    // Auto-sync with live R2 bucket if not synced in the last 60 seconds
+    const now = Date.now();
+    await Promise.allSettled(
+      accounts.map(async (acc) => {
+        const lastChecked = acc.lastCheckedAt ? new Date(acc.lastCheckedAt).getTime() : 0;
+        if (now - lastChecked > 60 * 1000) {
+          try {
+            await StorageManagerService.recalculateStorageUsage(acc._id);
+            // Refresh in-memory doc
+            const updated = await StorageAccount.findById(acc._id);
+            if (updated) {
+              acc.usedStorageBytes = updated.usedStorageBytes;
+              acc.status = updated.status;
+              acc.lastCheckedAt = updated.lastCheckedAt;
+            }
+          } catch (syncErr: any) {
+            logger.warn({ err: syncErr?.message, storageId: acc._id }, "Background auto-sync with R2 failed");
+          }
+        }
+      })
+    );
 
     return accounts.map((acc) => {
       const plain = acc.toJSON();
@@ -29,13 +51,18 @@ export class StorageService {
   }
 
   /**
-   * Retrieves a single storage account by ID
+   * Retrieves a single storage account by ID with real-time sync
    */
   public static async getById(id: string): Promise<any> {
-    const account = await StorageAccount.findById(id);
+    let account = await StorageAccount.findById(id);
     if (!account) {
       throw new NotFoundError("Storage account not found", "STORAGE_NOT_FOUND");
     }
+
+    try {
+      await StorageManagerService.recalculateStorageUsage(account._id);
+      account = (await StorageAccount.findById(id)) || account;
+    } catch (e) {}
 
     const plain = account.toJSON();
     const availableBytes = Math.max(0, account.maxStorageBytes - account.usedStorageBytes - account.reservedStorageBytes);

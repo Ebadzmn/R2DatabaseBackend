@@ -89,9 +89,24 @@ export class StorageManagerService {
   }
 
   /**
-   * Automatically selects and reserves storage in one atomic transaction/workflow
+   * Automatically selects and reserves storage in one atomic transaction/workflow,
+   * or reserves on a specific requested storage account.
    */
-  public static async selectAndReserveStorage(fileSize: number): Promise<IStorageAccount> {
+  public static async selectAndReserveStorage(
+    fileSize: number,
+    preferredStorageId?: string
+  ): Promise<IStorageAccount> {
+    if (preferredStorageId) {
+      const specificAccount = await StorageAccount.findById(preferredStorageId);
+      if (!specificAccount) {
+        throw new NotFoundError("Selected storage account not found", "STORAGE_NOT_FOUND");
+      }
+      if (specificAccount.status !== "ACTIVE") {
+        throw new StorageCapacityExceededError(`Selected storage account "${specificAccount.name}" is not ACTIVE.`);
+      }
+      return await this.reserveStorage(specificAccount._id, fileSize);
+    }
+
     const candidateAccounts = await StorageAccount.find({
       status: "ACTIVE"
     }).sort({ priority: 1, createdAt: 1 });

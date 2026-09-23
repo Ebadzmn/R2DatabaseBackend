@@ -5,6 +5,7 @@ import { logger } from "../../utils/logger";
 export const VIDEO_PROCESSING_QUEUE_NAME = "video-processing";
 export const STORAGE_SYNC_QUEUE_NAME = "storage-sync";
 export const MOVIE_DELETE_QUEUE_NAME = "movie-delete";
+export const REMOTE_DOWNLOAD_QUEUE_NAME = "remote-download";
 
 export interface VideoProcessingJobData {
   movieId: string;
@@ -22,6 +23,10 @@ export interface MovieDeleteJobData {
   storageAccountId: string;
   hlsPrefix: string;
   sourceKey?: string;
+}
+
+export interface RemoteDownloadJobData {
+  sessionId: string;
 }
 
 // Queue options with standard exponential backoff retry strategy
@@ -58,6 +63,14 @@ export const storageSyncQueue = new Queue<StorageSyncJobData>(
 
 export const movieDeleteQueue = new Queue<MovieDeleteJobData>(
   MOVIE_DELETE_QUEUE_NAME,
+  {
+    connection: redisConnection,
+    defaultJobOptions
+  }
+);
+
+export const remoteDownloadQueue = new Queue<RemoteDownloadJobData>(
+  REMOTE_DOWNLOAD_QUEUE_NAME,
   {
     connection: redisConnection,
     defaultJobOptions

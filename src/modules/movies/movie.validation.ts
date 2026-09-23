@@ -8,7 +8,21 @@ export const createMovieSchema = z.object({
     backdrop: z.string().url().optional().or(z.literal("")),
     type: z.enum(["MOVIE", "SERIES"]).default("MOVIE"),
     releaseYear: z.number().int().min(1888).max(2100).optional(),
-    genres: z.array(z.string()).default([])
+    genres: z.array(z.string()).default([]),
+    duration: z.number().optional(),
+    rating: z.number().optional(),
+    director: z.string().optional(),
+    trailerUrl: z.string().url().optional().or(z.literal("")),
+    tmdbId: z.number().optional(),
+    cast: z
+      .array(
+        z.object({
+          name: z.string(),
+          character: z.string().optional(),
+          image: z.string().optional()
+        })
+      )
+      .optional()
   })
 });
 
@@ -24,6 +38,22 @@ export const updateMovieSchema = z.object({
     type: z.enum(["MOVIE", "SERIES"]).optional(),
     releaseYear: z.number().int().min(1888).max(2100).optional(),
     genres: z.array(z.string()).optional(),
+    duration: z.number().optional(),
+    rating: z.number().optional(),
+    director: z.string().optional(),
+    trailerUrl: z.string().url().optional().or(z.literal("")),
+    tmdbId: z.number().optional(),
+    cast: z
+      .array(
+        z.object({
+          name: z.string(),
+          character: z.string().optional(),
+          image: z.string().optional()
+        })
+      )
+      .optional(),
+    totalSeasons: z.number().int().min(1).optional(),
+    episodes: z.array(z.any()).optional(),
     status: z.enum(["DRAFT", "UPLOADING", "PROCESSING", "READY", "FAILED"]).optional()
   })
 });

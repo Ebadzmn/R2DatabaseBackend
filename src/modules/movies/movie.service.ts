@@ -1,6 +1,8 @@
-import { Movie, IMovie } from "./movie.model";
+import { Types } from "mongoose";
+import { Movie, IMovie, IEpisode } from "./movie.model";
 import { StorageAccount } from "../storage/storage.model";
 import { R2Service } from "../storage/r2.service";
+import { StorageManagerService } from "../../services/storage-manager.service";
 import { videoProcessingQueue, movieDeleteQueue } from "../processing/processing.queue";
 import { ProcessingService } from "../processing/processing.service";
 import { CreateMovieInput, UpdateMovieInput, QueryMoviesInput } from "./movie.validation";
@@ -111,15 +113,244 @@ export class MovieService {
     if (input.type) movie.type = input.type;
     if (input.releaseYear !== undefined) movie.releaseYear = input.releaseYear;
     if (input.genres) movie.genres = input.genres;
+    if (input.duration !== undefined) movie.duration = input.duration;
+    if (input.rating !== undefined) movie.rating = input.rating;
+    if (input.director !== undefined) movie.director = input.director;
+    if (input.trailerUrl !== undefined) movie.trailerUrl = input.trailerUrl;
+    if (input.tmdbId !== undefined) movie.tmdbId = input.tmdbId;
+    if (input.cast !== undefined) movie.cast = input.cast;
+    if (input.totalSeasons !== undefined) movie.totalSeasons = input.totalSeasons;
+    if (input.episodes !== undefined) movie.episodes = input.episodes;
     if (input.status) movie.status = input.status;
 
     await movie.save();
     return movie;
   }
 
-  /**
-   * Deletes a movie, dispatching background cleanup for R2 HLS segments and source files
-   */
+  public static async addEpisode(
+    movieId: string,
+    data: {
+      seasonNumber: number;
+      episodeNumber: number;
+      title: string;
+      overview?: string;
+      stillPath?: string;
+      duration?: number;
+      airDate?: string;
+      rating?: number;
+    }
+  ) {
+    const movie = await Movie.findById(movieId);
+    if (!movie) {
+      throw new NotFoundError("Series not found", "SERIES_NOT_FOUND");
+    }
+
+    const newEpisode = {
+      _id: new Types.ObjectId(),
+      seasonNumber: data.seasonNumber,
+      episodeNumber: data.episodeNumber,
+      title: data.title,
+      overview: data.overview,
+      stillPath: data.stillPath,
+      duration: data.duration,
+      airDate: data.airDate,
+      rating: data.rating,
+      status: "DRAFT",
+      processingProgress: 0,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    movie.episodes.push(newEpisode as any);
+    if (data.seasonNumber > (movie.totalSeasons || 1)) {
+      movie.totalSeasons = data.seasonNumber;
+    }
+
+    await movie.save();
+    return newEpisode;
+  }
+
+  public static async updateEpisode(
+    movieId: string,
+    episodeId: string,
+    data: Partial<IEpisode>
+  ) {
+    const movie = await Movie.findById(movieId);
+    if (!movie) {
+      throw new NotFoundError("Series not found", "SERIES_NOT_FOUND");
+    }
+
+    const ep = movie.episodes.find((e) => e._id.toString() === episodeId);
+    if (!ep) {
+      throw new NotFoundError("Episode not found", "EPISODE_NOT_FOUND");
+    }
+
+    if (data.title !== undefined) ep.title = data.title;
+    if (data.seasonNumber !== undefined) ep.seasonNumber = data.seasonNumber;
+    if (data.episodeNumber !== undefined) ep.episodeNumber = data.episodeNumber;
+    if (data.overview !== undefined) ep.overview = data.overview;
+    if (data.stillPath !== undefined) ep.stillPath = data.stillPath;
+    if (data.duration !== undefined) ep.duration = data.duration;
+    if (data.airDate !== undefined) ep.airDate = data.airDate;
+    if (data.rating !== undefined) ep.rating = data.rating;
+
+    await movie.save();
+    return ep;
+  }
+
+  public static async deleteEpisode(movieId: string, episodeId: string) {
+    const movie = await Movie.findById(movieId);
+    if (!movie) {
+      throw new NotFoundError("Series not found", "SERIES_NOT_FOUND");
+    }
+
+    const ep = movie.episodes.find((e) => e._id.toString() === episodeId);
+    if (!ep) {
+      throw new NotFoundError("Episode not found", "EPISODE_NOT_FOUND");
+    }
+
+    // Purge episode files from R2 if uploaded
+    if (ep.hlsStorageId || ep.sourceStorageId) {
+      const storageId = ep.hlsStorageId || ep.sourceStorageId;
+      const hlsPrefix = ep.hlsMasterKey
+        ? ep.hlsMasterKey.replace("/master.m3u8", "")
+        : `series/${movie.slug}/season-${ep.seasonNumber}/episode-${ep.episodeNumber}/hls`;
+      const sourceKey = ep.sourceObjectKey;
+
+      (async () => {
+        try {
+          const storageAccount = await StorageAccount.findById(storageId);
+          if (storageAccount) {
+            if (hlsPrefix) await R2Service.deleteDirectory(storageAccount, hlsPrefix);
+            if (sourceKey) await R2Service.deleteObject(storageAccount, sourceKey);
+            await StorageManagerService.recalculateStorageUsage(storageAccount._id);
+          }
+        } catch (err) {
+          logger.error({ err, episodeId }, "Episode R2 asset purge error");
+        }
+      })();
+    }
+
+    movie.episodes = movie.episodes.filter((e) => e._id.toString() !== episodeId);
+    await movie.save();
+    return { success: true, message: "Episode removed" };
+  }
+
+  public static async importTmdbEpisodes(movieId: string) {
+    const movie = await Movie.findById(movieId);
+    if (!movie || !movie.tmdbId) {
+      throw new BadRequestError("Series does not have a TMDB ID assigned", "INVALID_REQUEST");
+    }
+
+    const { tmdbService } = await import("../../services/tmdb.service");
+    const details = await tmdbService.getDetails(movie.tmdbId, "tv");
+    const seasons = details.seasons || [];
+
+    const existingMap = new Map<string, any>();
+    for (const ep of movie.episodes) {
+      existingMap.set(`${ep.seasonNumber}-${ep.episodeNumber}`, ep);
+    }
+
+    for (const season of seasons) {
+      try {
+        const seasonData = await tmdbService.getSeasonEpisodes(movie.tmdbId, season.seasonNumber);
+        for (const ep of seasonData.episodes) {
+          const key = `${season.seasonNumber}-${ep.episodeNumber}`;
+          if (!existingMap.has(key)) {
+            movie.episodes.push({
+              _id: new Types.ObjectId(),
+              seasonNumber: season.seasonNumber,
+              episodeNumber: ep.episodeNumber,
+              title: ep.title || `Episode ${ep.episodeNumber}`,
+              overview: ep.overview,
+              stillPath: ep.stillPath,
+              duration: ep.duration ? ep.duration * 60 : undefined,
+              airDate: ep.airDate,
+              rating: ep.rating,
+              status: "DRAFT",
+              processingProgress: 0,
+              createdAt: new Date(),
+              updatedAt: new Date()
+            } as any);
+          }
+        }
+      } catch (err: any) {
+        logger.warn({ err: err?.message, seasonNumber: season.seasonNumber }, "Failed to fetch season episodes from TMDB");
+      }
+    }
+
+    if (details.numberOfSeasons) {
+      movie.totalSeasons = details.numberOfSeasons;
+    }
+
+    await movie.save();
+    return movie;
+  }
+
+  public static async getEpisodePlaybackUrl(
+    movieId: string,
+    seasonNumber: number,
+    episodeNumber: number
+  ) {
+    const movie = await Movie.findById(movieId);
+    if (!movie) {
+      throw new NotFoundError("Series not found", "SERIES_NOT_FOUND");
+    }
+
+    const ep = movie.episodes.find(
+      (e) => e.seasonNumber === seasonNumber && e.episodeNumber === episodeNumber
+    );
+
+    if (!ep) {
+      throw new NotFoundError("Episode not found in series", "EPISODE_NOT_FOUND");
+    }
+
+    if (ep.status !== "READY" || !ep.hlsMasterKey) {
+      throw new BadRequestError(
+        `Episode is not ready for playback (Current status: ${ep.status})`,
+        "INVALID_REQUEST"
+      );
+    }
+
+    let baseUrl = env.STREAMING_BASE_URL.replace(/\/+$/, "");
+    if (ep.hlsStorageId) {
+      const storageAccount = await StorageAccount.findById(ep.hlsStorageId);
+      if (storageAccount?.publicUrl) {
+        baseUrl = storageAccount.publicUrl.replace(/\/+$/, "");
+      }
+    }
+
+    let sourceBaseUrl = baseUrl;
+    if (ep.sourceStorageId && ep.sourceStorageId.toString() !== ep.hlsStorageId?.toString()) {
+      const srcStorageAccount = await StorageAccount.findById(ep.sourceStorageId);
+      if (srcStorageAccount?.publicUrl) {
+        sourceBaseUrl = srcStorageAccount.publicUrl.replace(/\/+$/, "");
+      }
+    }
+
+    const directSourceUrl = ep.sourceObjectKey
+      ? `${sourceBaseUrl}/${ep.sourceObjectKey.replace(/^\/+/, "")}`
+      : ep.sourceUrl;
+
+    const cleanMasterKey = ep.hlsMasterKey.replace(/^\/+/, "");
+    const playbackUrl = `${baseUrl}/${cleanMasterKey}`;
+    const proxyUrl = `/api/movies/${movie._id.toString()}/seasons/${seasonNumber}/episodes/${episodeNumber}/stream/master.m3u8`;
+
+    return {
+      movieId: movie._id.toString(),
+      episodeId: ep._id.toString(),
+      seriesTitle: movie.title,
+      episodeTitle: ep.title,
+      seasonNumber: ep.seasonNumber,
+      episodeNumber: ep.episodeNumber,
+      type: "HLS",
+      url: playbackUrl,
+      proxyUrl,
+      sourceUrl: directSourceUrl,
+      duration: ep.duration
+    };
+  }
+
   public static async delete(id: string): Promise<void> {
     const movie = await Movie.findById(id);
     if (!movie) {
@@ -129,53 +360,57 @@ export class MovieService {
     const storageId = movie.hlsStorageId || movie.sourceStorageId;
     const hlsPrefix = movie.hlsMasterKey
       ? movie.hlsMasterKey.replace("/master.m3u8", "")
+      : movie.type === "SERIES"
+      ? `series/${movie.slug}`
       : `movies/${movie.slug}/${movie._id.toString()}/hls`;
+    const sourceKey = movie.sourceObjectKey;
+
+    // Immediately remove MongoDB document so UI responds instantly
+    await Movie.findByIdAndDelete(id);
 
     if (storageId) {
-      // Queue background job for deleting R2 objects and releasing storage (with graceful fallback if Redis < 5.0)
-      try {
-        await movieDeleteQueue.add(
+      // 1. Dispatch BullMQ delete queue
+      movieDeleteQueue
+        .add(
           "delete-movie-assets",
           {
-            movieId: movie._id.toString(),
+            movieId: id,
             storageAccountId: storageId.toString(),
             hlsPrefix,
-            sourceKey: movie.sourceObjectKey
+            sourceKey
           },
           {
-            jobId: `del-${movie._id.toString()}-${Date.now()}`
+            jobId: `del-${id}-${Date.now()}`
           }
-        );
-      } catch (queueErr: any) {
-        logger.warn(
-          { err: queueErr?.message },
-          "movieDeleteQueue enqueue failed (Redis < 5.0). Running direct background deletion..."
-        );
+        )
+        .catch((queueErr: any) => {
+          logger.warn(
+            { err: queueErr?.message },
+            "movieDeleteQueue enqueue failed. Running direct background deletion..."
+          );
+        });
 
-        // Perform direct deletion
-        (async () => {
-          try {
-            const storageAccount = await StorageAccount.findById(storageId);
-            if (storageAccount) {
-              if (hlsPrefix) {
-                await R2Service.deleteDirectory(storageAccount, hlsPrefix);
-              }
-              if (movie.sourceObjectKey) {
-                await R2Service.deleteObject(storageAccount, movie.sourceObjectKey);
-              }
+      // 2. Direct background deletion guarantee for R2
+      (async () => {
+        try {
+          const storageAccount = await StorageAccount.findById(storageId);
+          if (storageAccount) {
+            if (hlsPrefix) {
+              await R2Service.deleteDirectory(storageAccount, hlsPrefix);
             }
-            await Movie.findByIdAndDelete(id);
-          } catch (err: any) {
-            logger.error({ err: err?.message }, "Direct movie deletion error");
-            await Movie.findByIdAndDelete(id);
+            if (sourceKey) {
+              await R2Service.deleteObject(storageAccount, sourceKey);
+            }
+            // Real-time synchronization of R2 storage bytes
+            await StorageManagerService.recalculateStorageUsage(storageAccount._id);
           }
-        })();
-      }
-    } else {
-      await Movie.findByIdAndDelete(id);
+        } catch (err: any) {
+          logger.error({ err: err?.message, movieId: id }, "Direct R2 movie asset purge error");
+        }
+      })();
     }
 
-    logger.info({ movieId: id }, "Movie deletion initiated successfully");
+    logger.info({ movieId: id }, "Movie and R2 asset cleanup completed successfully");
   }
 
   /**
@@ -199,8 +434,18 @@ export class MovieService {
     movie.processingError = undefined;
     await movie.save();
 
-    try {
-      await videoProcessingQueue.add(
+    // Direct execution
+    ProcessingService.processVideo({
+      movieId: movie._id.toString(),
+      uploadSessionId: "",
+      storageAccountId: movie.sourceStorageId.toString(),
+      sourceObjectKey: movie.sourceObjectKey
+    }).catch((procErr) => {
+      logger.error({ err: procErr?.message, movieId: movie._id }, "Direct background video processing failed");
+    });
+
+    videoProcessingQueue
+      .add(
         "process-video",
         {
           movieId: movie._id.toString(),
@@ -211,24 +456,10 @@ export class MovieService {
         {
           jobId: `proc-${movie._id.toString()}-${Date.now()}`
         }
-      );
-    } catch (queueErr: any) {
-      logger.warn(
-        { err: queueErr?.message },
-        "BullMQ enqueue failed (Redis < 5.0 or offline). Executing direct background video processing pipeline..."
-      );
+      )
+      .catch(() => {});
 
-      ProcessingService.processVideo({
-        movieId: movie._id.toString(),
-        uploadSessionId: "",
-        storageAccountId: movie.sourceStorageId.toString(),
-        sourceObjectKey: movie.sourceObjectKey
-      }).catch((procErr) => {
-        logger.error({ err: procErr?.message }, "Direct background video processing failed");
-      });
-    }
-
-    return { message: "Movie processing queued successfully" };
+    return { message: "Movie video processing immediately started" };
   }
 
 

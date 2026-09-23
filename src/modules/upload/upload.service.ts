@@ -49,12 +49,21 @@ export class UploadService {
       });
     }
 
-    // Select and atomically reserve storage capacity
-    const storageAccount = await StorageManagerService.selectAndReserveStorage(input.fileSize);
+    // Select and atomically reserve storage capacity (auto or specific user-selected R2 account)
+    const storageAccount = await StorageManagerService.selectAndReserveStorage(
+      input.fileSize,
+      input.storageAccountId
+    );
 
-    // Predictable and collision-free object key: movies/{movieSlug}/{movieId}/source/{fileName}
+    // Predictable and collision-free object key
     const cleanFileName = input.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const objectKey = `movies/${movieSlug}/${movieIdStr}/source/${cleanFileName}`;
+    let objectKey = `movies/${movieSlug}/${movieIdStr}/source/${cleanFileName}`;
+
+    if (movie.type === "SERIES" && (input.seasonNumber || input.episodeNumber)) {
+      const sNum = input.seasonNumber || 1;
+      const eNum = input.episodeNumber || 1;
+      objectKey = `series/${movieSlug}/season-${sNum}/episode-${eNum}/source/${cleanFileName}`;
+    }
 
     let uploadId: string | undefined = undefined;
     let directPutUrl: string | undefined = undefined;
@@ -93,8 +102,16 @@ export class UploadService {
       );
     }
 
+    let targetEpisodeObjectId: Types.ObjectId | undefined = undefined;
+    if (input.episodeId) {
+      targetEpisodeObjectId = new Types.ObjectId(input.episodeId);
+    }
+
     const session = await UploadSession.create({
       movieId: movie._id,
+      episodeId: targetEpisodeObjectId,
+      seasonNumber: input.seasonNumber,
+      episodeNumber: input.episodeNumber,
       storageAccountId: storageAccount._id,
       objectKey,
       fileName: input.fileName,
@@ -106,11 +123,27 @@ export class UploadService {
     });
 
     // Update movie with storage details
-    movie.sourceStorageId = storageAccount._id;
-    movie.hlsStorageId = storageAccount._id;
-    movie.sourceObjectKey = objectKey;
-    movie.status = "UPLOADING";
-    movie.fileSize = input.fileSize;
+    if (movie.type === "SERIES" && (input.episodeId || (input.seasonNumber && input.episodeNumber))) {
+      let ep = input.episodeId
+        ? movie.episodes.find((e) => e._id.toString() === input.episodeId)
+        : movie.episodes.find(
+            (e) => e.seasonNumber === input.seasonNumber && e.episodeNumber === input.episodeNumber
+          );
+
+      if (ep) {
+        ep.sourceStorageId = storageAccount._id;
+        ep.hlsStorageId = storageAccount._id;
+        ep.sourceObjectKey = objectKey;
+        ep.status = "UPLOADING";
+        ep.fileSize = input.fileSize;
+      }
+    } else {
+      movie.sourceStorageId = storageAccount._id;
+      movie.hlsStorageId = storageAccount._id;
+      movie.sourceObjectKey = objectKey;
+      movie.status = "UPLOADING";
+      movie.fileSize = input.fileSize;
+    }
     await movie.save();
 
     logger.info(
@@ -318,9 +351,19 @@ export class UploadService {
         processingProgress: 0
       });
 
-      // Enqueue background video processing job in BullMQ (with graceful direct fallback if Redis < 5.0)
-      try {
-        await videoProcessingQueue.add(
+      // Direct background video processing pipeline execution (Guaranteed execution without relying on Redis worker setup)
+      ProcessingService.processVideo({
+        movieId: session.movieId.toString(),
+        uploadSessionId: session._id.toString(),
+        storageAccountId: session.storageAccountId.toString(),
+        sourceObjectKey: session.objectKey
+      }).catch((procErr) => {
+        logger.error({ err: procErr?.message, movieId: session.movieId }, "Background video processing encountered an error");
+      });
+
+      // Also register job with BullMQ for monitoring if queue is available
+      videoProcessingQueue
+        .add(
           "process-video",
           {
             movieId: session.movieId.toString(),
@@ -331,28 +374,15 @@ export class UploadService {
           {
             jobId: `proc-${session.movieId.toString()}-${Date.now()}`
           }
-        );
-
-        logger.info(
-          { movieId: session.movieId, sessionId: session._id, fileUrl },
-          "Video processing job successfully enqueued in BullMQ"
-        );
-      } catch (queueErr: any) {
-        logger.warn(
-          { err: queueErr?.message },
-          "BullMQ enqueue skipped (Redis < 5.0 or stream unsupported). Executing direct background video processing pipeline..."
-        );
-
-        // Run direct processing in background without throwing 500 to the client
-        ProcessingService.processVideo({
-          movieId: session.movieId.toString(),
-          uploadSessionId: session._id.toString(),
-          storageAccountId: session.storageAccountId.toString(),
-          sourceObjectKey: session.objectKey
-        }).catch((procErr) => {
-          logger.error({ err: procErr?.message }, "Direct background video processing encountered an error");
+        )
+        .catch((queueErr) => {
+          logger.warn({ err: queueErr?.message }, "BullMQ queue recording skipped");
         });
-      }
+
+      logger.info(
+        { movieId: session.movieId, sessionId: session._id, fileUrl },
+        "Video processing pipeline immediately started"
+      );
     }
 
 

@@ -3,6 +3,10 @@ import { connectDatabase, disconnectDatabase } from "./config/database";
 import { AuthService } from "./modules/auth/auth.service";
 import { env } from "./config/env";
 import { logger } from "./utils/logger";
+import { videoProcessingWorker } from "./workers/video-processing.worker";
+import { storageSyncWorker } from "./workers/storage-sync.worker";
+import { movieDeleteWorker } from "./workers/movie-delete.worker";
+import { remoteDownloadWorker } from "./workers/remote-download.worker";
 
 import os from "os";
 import mongoose from "mongoose";
