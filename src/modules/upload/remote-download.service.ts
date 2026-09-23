@@ -271,30 +271,6 @@ export class RemoteDownloadService {
       let chunkBuffers: Buffer[] = [];
       let currentChunkSize = 0;
 
-      const uploadCurrentChunk = async (isFinal = false) => {
-        if (chunkBuffers.length === 0) return;
-
-        const combinedBuffer = Buffer.concat(chunkBuffers, currentChunkSize);
-        chunkBuffers = [];
-        currentChunkSize = 0;
-
-        logger.info(
-          { sessionId, partNumber, size: combinedBuffer.length, isFinal },
-          "Uploading chunk part to Cloudflare R2"
-        );
-
-        const etag = await R2Service.uploadPart(
-          storageAccount,
-          session.objectKey,
-          session.uploadId!,
-          partNumber,
-          combinedBuffer
-        );
-
-        partsETags.push({ PartNumber: partNumber, ETag: etag });
-        partNumber++;
-      };
-
       for await (const chunk of response.data) {
         if (abortController.signal.aborted) {
           throw new Error("Download cancelled by user");
@@ -305,9 +281,36 @@ export class RemoteDownloadService {
         currentChunkSize += buf.length;
         totalLoadedBytes += buf.length;
 
-        // When accumulator reaches 10MB, push chunk directly to R2 multipart
-        if (currentChunkSize >= PART_SIZE) {
-          await uploadCurrentChunk(false);
+        // When accumulator reaches PART_SIZE, slice exact PART_SIZE chunk(s) directly to R2 multipart.
+        // Cloudflare R2 strictly requires that all non-trailing parts have the EXACT same length.
+        while (currentChunkSize >= PART_SIZE) {
+          const combined = Buffer.concat(chunkBuffers, currentChunkSize);
+          const partBuffer = combined.subarray(0, PART_SIZE);
+          const remainder = combined.subarray(PART_SIZE);
+
+          if (remainder.length > 0) {
+            chunkBuffers = [remainder];
+            currentChunkSize = remainder.length;
+          } else {
+            chunkBuffers = [];
+            currentChunkSize = 0;
+          }
+
+          logger.info(
+            { sessionId, partNumber, size: partBuffer.length, isFinal: false },
+            "Uploading chunk part to Cloudflare R2"
+          );
+
+          const etag = await R2Service.uploadPart(
+            storageAccount,
+            session.objectKey,
+            session.uploadId!,
+            partNumber,
+            partBuffer
+          );
+
+          partsETags.push({ PartNumber: partNumber, ETag: etag });
+          partNumber++;
         }
 
         // Throttle progress updates to DB (every 1 second)
@@ -336,9 +339,31 @@ export class RemoteDownloadService {
         }
       }
 
-      // Upload remaining buffered bytes (final part)
+      // Upload remaining buffered bytes (final trailing part)
       if (currentChunkSize > 0) {
-        await uploadCurrentChunk(true);
+        const finalBuffer = Buffer.concat(chunkBuffers, currentChunkSize);
+        chunkBuffers = [];
+        currentChunkSize = 0;
+
+        logger.info(
+          { sessionId, partNumber, size: finalBuffer.length, isFinal: true },
+          "Uploading final chunk part to Cloudflare R2"
+        );
+
+        const etag = await R2Service.uploadPart(
+          storageAccount,
+          session.objectKey,
+          session.uploadId!,
+          partNumber,
+          finalBuffer
+        );
+
+        partsETags.push({ PartNumber: partNumber, ETag: etag });
+        partNumber++;
+      }
+
+      if (partsETags.length === 0) {
+        throw new Error("No data received from remote URL stream");
       }
 
       logger.info(
@@ -363,10 +388,19 @@ export class RemoteDownloadService {
         await UploadService.abortUpload(sessionId).catch(() => {});
       } else {
         logger.error({ err: err?.message, sessionId }, "Remote download stream failed");
-        session.status = "FAILED";
-        session.error = err?.message || "Failed to download remote file";
-        await session.save();
-        await StorageManagerService.releaseStorage(session.storageAccountId, session.fileSize).catch(() => {});
+        const freshSession = await UploadSession.findById(sessionId);
+        if (freshSession && freshSession.status !== "FAILED") {
+          freshSession.status = "FAILED";
+          freshSession.error = err?.message || "Failed to download remote file";
+          await freshSession.save();
+          await StorageManagerService.releaseStorage(freshSession.storageAccountId, freshSession.fileSize).catch(() => {});
+        }
+        if (session.movieId) {
+          await Movie.findByIdAndUpdate(session.movieId, { status: "FAILED" }).catch(() => {});
+        }
+        if (session.uploadId) {
+          await R2Service.abortMultipartUpload(storageAccount, session.objectKey, session.uploadId).catch(() => {});
+        }
       }
       throw err;
     } finally {

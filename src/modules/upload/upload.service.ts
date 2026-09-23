@@ -320,6 +320,9 @@ export class UploadService {
         session.status = "FAILED";
         session.error = error?.message || "Failed to complete multipart upload on R2";
         await session.save();
+        if (session.movieId) {
+          await Movie.findByIdAndUpdate(session.movieId, { status: "FAILED" }).catch(() => {});
+        }
         await StorageManagerService.releaseStorage(session.storageAccountId, session.fileSize);
         throw error;
       }

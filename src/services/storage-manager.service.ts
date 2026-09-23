@@ -152,9 +152,15 @@ export class StorageManagerService {
 
     return StorageAccount.findOneAndUpdate(
       { _id: objectId },
-      {
-        $inc: { reservedStorageBytes: -reservedSize }
-      },
+      [
+        {
+          $set: {
+            reservedStorageBytes: {
+              $max: [0, { $subtract: ["$reservedStorageBytes", reservedSize] }]
+            }
+          }
+        }
+      ],
       { new: true }
     );
   }
@@ -171,12 +177,18 @@ export class StorageManagerService {
 
     const account = await StorageAccount.findOneAndUpdate(
       { _id: objectId },
-      {
-        $inc: {
-          reservedStorageBytes: -reservedSize,
-          usedStorageBytes: actualSize
+      [
+        {
+          $set: {
+            reservedStorageBytes: {
+              $max: [0, { $subtract: ["$reservedStorageBytes", reservedSize] }]
+            },
+            usedStorageBytes: {
+              $add: ["$usedStorageBytes", actualSize]
+            }
+          }
         }
-      },
+      ],
       { new: true }
     );
 

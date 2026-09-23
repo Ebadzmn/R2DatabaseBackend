@@ -40,10 +40,17 @@ export class ProcessingService {
     const hlsOutputDir = path.join(workDir, "hls");
 
     const updateProcessingProgress = async (progressPercent: number) => {
+      if (session) {
+        await UploadSession.updateOne(
+          { _id: session._id, status: { $nin: ["COMPLETED", "FAILED", "ABORTED"] } },
+          { $set: { status: "PROCESSING", progress: progressPercent } }
+        ).catch(() => {});
+      }
+
       if (isEpisode && session) {
         if (session.episodeId) {
           await Movie.updateOne(
-            { _id: movie._id, "episodes._id": session.episodeId },
+            { _id: movie._id, "episodes._id": session.episodeId, "episodes.status": { $ne: "READY" } },
             { $set: { "episodes.$.status": "PROCESSING", "episodes.$.processingProgress": progressPercent } }
           ).catch(() => {});
         } else if (session.seasonNumber && session.episodeNumber) {
@@ -51,15 +58,17 @@ export class ProcessingService {
             {
               _id: movie._id,
               "episodes.seasonNumber": session.seasonNumber,
-              "episodes.episodeNumber": session.episodeNumber
+              "episodes.episodeNumber": session.episodeNumber,
+              "episodes.status": { $ne: "READY" }
             },
             { $set: { "episodes.$.status": "PROCESSING", "episodes.$.processingProgress": progressPercent } }
           ).catch(() => {});
         }
       } else {
-        await Movie.findByIdAndUpdate(movie._id, {
-          $set: { status: "PROCESSING", processingProgress: progressPercent }
-        }).catch(() => {});
+        await Movie.updateOne(
+          { _id: movie._id, status: { $ne: "READY" } },
+          { $set: { status: "PROCESSING", processingProgress: progressPercent } }
+        ).catch(() => {});
       }
     };
 
@@ -199,7 +208,19 @@ export class ProcessingService {
       }
 
       await updateProcessingProgress(85);
-      const uploadedBytes = await this.uploadDirectoryToR2(storageAccount, hlsOutputDir, hlsPrefix);
+      let lastUploadPercent = 85;
+      const uploadedBytes = await this.uploadDirectoryToR2(
+        storageAccount,
+        hlsOutputDir,
+        hlsPrefix,
+        async (uploaded, total) => {
+          const p = Math.min(99, 85 + Math.round((uploaded / total) * 14));
+          if (p > lastUploadPercent) {
+            lastUploadPercent = p;
+            await updateProcessingProgress(p);
+          }
+        }
+      );
 
       // Account for the additional storage used by the HLS segments
       await StorageAccount.findByIdAndUpdate(storageAccount._id, {
@@ -315,9 +336,16 @@ export class ProcessingService {
   private static async uploadDirectoryToR2(
     storageAccount: StorageAccountType,
     localDir: string,
-    r2Prefix: string
+    r2Prefix: string,
+    onProgress?: (uploadedFiles: number, totalFiles: number) => void
   ): Promise<number> {
-    let totalBytes = 0;
+    interface FileToUpload {
+      fullPath: string;
+      r2Key: string;
+      contentType: string;
+    }
+
+    const filesToUpload: FileToUpload[] = [];
 
     const walk = async (currentDir: string, subPath = "") => {
       const entries = await fs.readdir(currentDir, { withFileTypes: true });
@@ -329,7 +357,6 @@ export class ProcessingService {
         if (entry.isDirectory()) {
           await walk(fullLocalPath, relativeKey);
         } else if (entry.isFile()) {
-          const fileBuffer = await fs.readFile(fullLocalPath);
           const r2Key = `${r2Prefix}/${relativeKey}`.replace(/\\/g, "/");
 
           let contentType = "application/octet-stream";
@@ -339,13 +366,32 @@ export class ProcessingService {
             contentType = "video/mp2t";
           }
 
-          await R2Service.putObject(storageAccount, r2Key, fileBuffer, contentType);
-          totalBytes += fileBuffer.length;
+          filesToUpload.push({ fullPath: fullLocalPath, r2Key, contentType });
         }
       }
     };
 
     await walk(localDir);
+
+    let totalBytes = 0;
+    let completedCount = 0;
+    const CONCURRENCY = 10;
+
+    for (let i = 0; i < filesToUpload.length; i += CONCURRENCY) {
+      const batch = filesToUpload.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        batch.map(async (file) => {
+          const fileBuffer = await fs.readFile(file.fullPath);
+          await R2Service.putObject(storageAccount, file.r2Key, fileBuffer, file.contentType);
+          totalBytes += fileBuffer.length;
+          completedCount++;
+          if (onProgress) {
+            await onProgress(completedCount, filesToUpload.length);
+          }
+        })
+      );
+    }
+
     return totalBytes;
   }
 }
