@@ -6,7 +6,7 @@ import { Movie, IMovie } from "../movies/movie.model";
 import { StorageAccount } from "../storage/storage.model";
 import { UploadSession } from "../upload/upload.model";
 import { R2Service } from "../storage/r2.service";
-import { MediaMetadataService } from "../../services/media-metadata.service";
+import { MediaMetadataService, MediaProbeResult } from "../../services/media-metadata.service";
 import { FFmpegService, RenditionConfig } from "./ffmpeg.service";
 import { logger } from "../../utils/logger";
 
@@ -84,16 +84,36 @@ export class ProcessingService {
         await session.save();
       }
 
-      logger.info({ movieId, sourceObjectKey, isEpisode }, "Downloading source video from R2 for FFmpeg processing");
+      // 1. Zero-Disk Streaming: Resolve direct R2 stream URL (via public URL or presigned GET)
+      let sourceInput = "";
+      try {
+        if (storageAccount.publicUrl) {
+          const cleanBase = storageAccount.publicUrl.replace(/\/+$/, "");
+          const cleanKey = sourceObjectKey.replace(/^\/+/, "");
+          sourceInput = `${cleanBase}/${cleanKey}`;
+        } else {
+          sourceInput = await R2Service.getPresignedGetUrl(storageAccount, sourceObjectKey, 7200);
+        }
+        logger.info({ movieId, sourceInput }, "Connecting direct R2 streaming pipeline for FFprobe & FFmpeg");
+      } catch (urlErr: any) {
+        logger.warn({ urlErr: urlErr?.message }, "Failed to generate presigned R2 URL, falling back to local file download");
+      }
 
-      // 1. Download source video stream from R2
-      const downloadStream = await R2Service.getObjectStream(storageAccount, sourceObjectKey);
-      await pipeline(downloadStream, createWriteStream(sourceFilePath));
-
-      logger.info({ movieId, sourceFilePath }, "Source video downloaded, probing media metadata");
-
-      // 2. FFprobe media inspection
-      const probe = await MediaMetadataService.probe(sourceFilePath);
+      // 2. FFprobe media inspection (Streamed directly from R2, 0s download wait!)
+      let probe: MediaProbeResult;
+      try {
+        if (!sourceInput) throw new Error("No R2 streaming URL available");
+        probe = await MediaMetadataService.probe(sourceInput);
+      } catch (probeErr: any) {
+        logger.warn(
+          { probeErr: probeErr?.message, movieId },
+          "Direct R2 stream probe encountered an issue, falling back to local file download"
+        );
+        const downloadStream = await R2Service.getObjectStream(storageAccount, sourceObjectKey);
+        await pipeline(downloadStream, createWriteStream(sourceFilePath));
+        sourceInput = sourceFilePath;
+        probe = await MediaMetadataService.probe(sourceFilePath);
+      }
 
       if (isEpisode && session) {
         if (session.episodeId) {
@@ -136,64 +156,30 @@ export class ProcessingService {
         await movie.save();
       }
 
-      // 3. Determine if video can be fast-remuxed (already <= 720p H.264/AAC)
-      const canFastRemux = FFmpegService.canFastRemuxHLS(probe);
+      // 3. Select renditions ladder based on input probe (1080p & 720p if >= 1080p, or 720p)
       const renditions = FFmpegService.selectRenditions(probe);
 
-      if (canFastRemux) {
-        logger.info(
-          { movieId, resolution: probe.resolution, videoCodec: probe.videoCodec },
-          "Video is already in optimal streaming format (<= 720p H264). Bypassing heavy re-encode with instant HLS stream copy."
-        );
+      logger.info(
+        { movieId, renditions: renditions.map((r) => r.name), resolution: probe.resolution },
+        "Selected adaptive multi-rendition HLS encoding ladder"
+      );
 
-        await updateProcessingProgress(40);
+      // 4. Generate Renditions HLS
+      const totalDuration = probe.duration || 0;
 
-        // Ultra fast stream copy: 100x faster (Takes 2-3 seconds!)
-        await FFmpegService.generateFastDirectHLS(sourceFilePath, hlsOutputDir, (percent) => {
-          updateProcessingProgress(40 + Math.round(percent * 0.35)).catch(() => {});
-        });
-
-        // Generate master playlist for the 720p stream
-        await FFmpegService.generateMasterPlaylist(hlsOutputDir, [{
-          name: "720p",
-          resolution: probe.resolution || "1280x720",
-          width: probe.width || 1280,
-          height: probe.height || 720,
-          videoBitrate: "2500k",
-          audioBitrate: "128k",
-          bandwidth: 2800000
-        }]);
-      } else {
-        logger.info(
-          { movieId, renditions: renditions.map((r) => r.name) },
-          "Selected multi-rendition HLS encoding ladder"
-        );
-
-        // 4. Generate HLS for each rendition with multi-core acceleration
-        let completedRenditions = 0;
-        let lastReportedProgress = 20;
-        const totalDuration = probe.duration || 0;
-
-        for (const rendition of renditions) {
-          await FFmpegService.generateRendition(
-            sourceFilePath,
-            hlsOutputDir,
-            rendition,
-            totalDuration,
-            (percent) => {
-              const overall = 20 + Math.round(((completedRenditions + percent / 100) / renditions.length) * 55);
-              if (overall > lastReportedProgress) {
-                lastReportedProgress = overall;
-                updateProcessingProgress(overall).catch(() => {});
-              }
-            }
-          );
-          completedRenditions++;
+      await FFmpegService.generateRenditionsHLS(
+        sourceInput,
+        hlsOutputDir,
+        renditions,
+        totalDuration,
+        (percent) => {
+          const overall = 20 + Math.round((percent / 100) * 60);
+          updateProcessingProgress(overall).catch(() => {});
         }
+      );
 
-        // 5. Generate master.m3u8 playlist
-        await FFmpegService.generateMasterPlaylist(hlsOutputDir, renditions);
-      }
+      // 5. Generate master.m3u8 playlist combining all renditions
+      await FFmpegService.generateMasterPlaylist(hlsOutputDir, renditions);
 
       await updateProcessingProgress(80);
 

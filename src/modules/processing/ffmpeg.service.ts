@@ -1,11 +1,13 @@
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import path from "path";
 import fs from "fs/promises";
+import os from "os";
 import { env } from "../../config/env";
 import { logger } from "../../utils/logger";
 import { MediaProbeResult } from "../../services/media-metadata.service";
 
 let resolvedFfmpegPath = "ffmpeg";
+
 try {
   if (env.FFMPEG_PATH) {
     resolvedFfmpegPath = env.FFMPEG_PATH;
@@ -20,13 +22,96 @@ try {
   logger.warn({ err: e }, "Could not set automatic ffmpeg path, relying on system PATH");
 }
 
+/**
+ * Universal Hardware/CPU Encoder Auto-Detection:
+ * Works across Linux, Windows, and macOS (Supports NVENC, QSV, VAAPI, VideoToolbox, and CPU libx264)
+ */
+export interface EncoderCapabilities {
+  codec: string;
+  presetArgs: string[];
+  isHardware: boolean;
+  name: string;
+}
+
+let cachedEncoder: EncoderCapabilities | null = null;
+
+function detectBestEncoder(): EncoderCapabilities {
+  if (cachedEncoder) return cachedEncoder;
+
+  try {
+    const stdout = execSync(`"${resolvedFfmpegPath}" -encoders 2>/dev/null`, { encoding: "utf8" });
+
+    // 1. NVIDIA GPU (Linux / Windows VPS) - Fastest on servers with NVIDIA GPUs
+    if (stdout.includes("h264_nvenc")) {
+      cachedEncoder = {
+        codec: "h264_nvenc",
+        presetArgs: ["-preset", "p1", "-tune", "ll"], // p1 (fastest NVENC)
+        isHardware: true,
+        name: "NVIDIA NVENC (GPU)",
+      };
+      logger.info({ encoder: cachedEncoder.name }, "Hardware encoder detected: NVIDIA NVENC");
+      return cachedEncoder;
+    }
+
+    // 2. Intel QuickSync (Linux / Windows / Intel CPUs)
+    if (stdout.includes("h264_qsv")) {
+      cachedEncoder = {
+        codec: "h264_qsv",
+        presetArgs: ["-preset", "veryfast"],
+        isHardware: true,
+        name: "Intel QuickSync (QSV)",
+      };
+      logger.info({ encoder: cachedEncoder.name }, "Hardware encoder detected: Intel QuickSync");
+      return cachedEncoder;
+    }
+
+    // 3. Apple Silicon (macOS)
+    if (process.platform === "darwin" && stdout.includes("h264_videotoolbox")) {
+      cachedEncoder = {
+        codec: "h264_videotoolbox",
+        presetArgs: ["-realtime", "1"],
+        isHardware: true,
+        name: "Apple Silicon VideoToolbox",
+      };
+      logger.info({ encoder: cachedEncoder.name }, "Hardware encoder detected: Apple VideoToolbox");
+      return cachedEncoder;
+    }
+
+    // 4. Linux VA-API (Generic Linux AMD/Intel Hardware Acceleration)
+    if (process.platform === "linux" && stdout.includes("h264_vaapi")) {
+      cachedEncoder = {
+        codec: "h264_vaapi",
+        presetArgs: [],
+        isHardware: true,
+        name: "Linux VA-API",
+      };
+      logger.info({ encoder: cachedEncoder.name }, "Hardware encoder detected: Linux VA-API");
+      return cachedEncoder;
+    }
+  } catch (err: any) {
+    logger.warn({ err: err?.message }, "Failed to auto-detect hardware encoders, using optimized CPU fallback");
+  }
+
+  // 5. Universal CPU Fallback (Optimized for low-end Linux & Windows servers)
+  cachedEncoder = {
+    codec: "libx264",
+    presetArgs: ["-preset", "ultrafast", "-tune", "fastdecode"],
+    isHardware: false,
+    name: "Universal libx264 (CPU Ultra-Fast)",
+  };
+  logger.info({ encoder: cachedEncoder.name }, "Using high-performance universal CPU encoder");
+  return cachedEncoder;
+}
+
 export interface RenditionConfig {
-  name: string; // e.g. "1080p", "720p"
-  resolution: string; // "1920x1080"
+  name: string; // "1080p", "720p"
+  resolution: string; // "1920x1080", "1280x720"
   width: number;
   height: number;
-  videoBitrate: string; // "4500k"
-  audioBitrate: string; // "192k"
+  videoBitrate: string; // "3000k", "1800k"
+  maxBitrate: string;
+  bufSize: string;
+  audioBitrate: string; // "128k"
   bandwidth: number; // in bps
 }
 
@@ -36,209 +121,149 @@ export const RENDITIONS: RenditionConfig[] = [
     resolution: "1920x1080",
     width: 1920,
     height: 1080,
-    videoBitrate: "4500k",
-    audioBitrate: "192k",
-    bandwidth: 5000000,
+    videoBitrate: "3000k",
+    maxBitrate: "3500k",
+    bufSize: "6000k",
+    audioBitrate: "128k",
+    bandwidth: 3500000,
   },
   {
     name: "720p",
     resolution: "1280x720",
     width: 1280,
     height: 720,
-    videoBitrate: "2500k",
+    videoBitrate: "1800k",
+    maxBitrate: "2200k",
+    bufSize: "3600k",
     audioBitrate: "128k",
-    bandwidth: 2800000,
+    bandwidth: 2200000,
   },
 ];
 
 export class FFmpegService {
   /**
-   * Smartly checks if the video is already H.264/AAC at 720p or standard streaming format
-   * which can be remuxed/packetized directly without CPU-intensive re-encoding.
-   */
-  public static canFastRemuxHLS(probe: MediaProbeResult): boolean {
-    const isH264 = probe.videoCodec?.toLowerCase().includes("h264") || probe.videoCodec?.toLowerCase().includes("avc");
-    const isAAC = !probe.audioCodec || probe.audioCodec.toLowerCase().includes("aac");
-    const height = probe.height || 0;
-    // If <= 720p and already in web standard h264/aac codec, fast remux takes 1-2 seconds!
-    return Boolean(isH264 && isAAC && height > 0 && height <= 720);
-  }
-
-  /**
-   * Ultra-fast Stream Copy (Remuxing) directly to HLS segments without re-encoding
-   * Speed: 50x - 100x realtime (Instant 2-3 seconds for a 4 min video!)
-   */
-  public static async generateFastDirectHLS(
-    inputPath: string,
-    outputDir: string,
-    onProgress?: (percent: number) => void
-  ): Promise<void> {
-    const renditionDir = path.join(outputDir, "720p");
-    await fs.mkdir(renditionDir, { recursive: true });
-
-    // Stream copy (-c copy): zero quality loss, zero CPU lag, instant HLS packetizing
-    const args = [
-      "-y",
-      "-i",
-      inputPath,
-      "-c:v",
-      "copy",
-      "-c:a",
-      "copy",
-      "-hls_time",
-      "6",
-      "-hls_list_size",
-      "0",
-      "-hls_segment_type",
-      "mpegts",
-      "-hls_segment_filename",
-      "segment_%03d.ts",
-      "index.m3u8",
-    ];
-
-    return new Promise((resolve, reject) => {
-      logger.info({ cwd: renditionDir }, "Executing ultra-fast HLS stream remuxing (direct copy)");
-
-      const proc = spawn(resolvedFfmpegPath, args, {
-        cwd: renditionDir,
-        windowsHide: true,
-      });
-
-      let stderrOutput = "";
-
-      proc.stderr.on("data", (data) => {
-        stderrOutput += data.toString();
-        if (onProgress) onProgress(60);
-      });
-
-      proc.on("error", (err) => {
-        logger.error({ err }, "Failed to execute fast HLS stream remuxing");
-        reject(err);
-      });
-
-      proc.on("close", (code) => {
-        if (code === 0) {
-          logger.info("Fast HLS stream remuxing completed successfully");
-          if (onProgress) onProgress(100);
-          resolve();
-        } else {
-          logger.warn({ code, stderr: stderrOutput.slice(-500) }, "Fast remuxing failed, falling back to standard encode");
-          reject(new Error(`Fast remux exited with code ${code}`));
-        }
-      });
-    });
-  }
-
-  /**
-   * Determines target renditions based on the source video resolution
+   * Always generates both 1080p and 720p if source >= 1080p, or 720p if source is 720p.
    */
   public static selectRenditions(probe: MediaProbeResult): RenditionConfig[] {
     const height = probe.height || 720;
-
     if (height >= 1080) {
-      return RENDITIONS; // 1080p, 720p
+      return RENDITIONS; // Both 1080p & 720p
     } else {
-      return RENDITIONS.filter((r) => r.name === "720p"); // 720p only
+      return [RENDITIONS[1]]; // 720p only
     }
   }
 
   /**
-   * High-Performance Multi-threaded HLS Transcoder
+   * Cross-Platform Fast HLS Transcoder (Linux, Windows, macOS)
+   * Automatically leverages GPU (NVIDIA NVENC, Intel QSV, Apple VideoToolbox) or lightweight CPU libx264.
    */
-  public static async generateRendition(
+  public static async generateRenditionsHLS(
     inputPath: string,
     outputDir: string,
-    rendition: RenditionConfig,
+    renditions: RenditionConfig[],
     totalDurationSeconds = 0,
     onProgress?: (percent: number) => void
   ): Promise<void> {
-    const renditionDir = path.join(outputDir, rendition.name);
-    await fs.mkdir(renditionDir, { recursive: true });
+    const encoder = detectBestEncoder();
 
-    const args = [
-      "-y",
-      "-i",
-      inputPath,
-      "-c:v",
-      "libx264",
-      "-s",
-      `${rendition.width}x${rendition.height}`,
-      "-b:v",
-      rendition.videoBitrate,
-      "-c:a",
-      "aac",
-      "-b:a",
-      rendition.audioBitrate,
-      "-preset",
-      "ultrafast", // Highest possible transcoding speed
-      "-tune",
-      "fastdecode",
-      "-threads",
-      "0", // Leverage all available CPU cores
-      "-g",
-      "48",
-      "-sc_threshold",
-      "0",
-      "-hls_time",
-      "6",
-      "-hls_list_size",
-      "0",
-      "-hls_segment_type",
-      "mpegts",
-      "-hls_segment_filename",
-      "segment_%03d.ts",
-      "index.m3u8",
-    ];
+    // Ensure rendition directories exist
+    for (const r of renditions) {
+      await fs.mkdir(path.join(outputDir, r.name), { recursive: true });
+    }
 
-    return new Promise((resolve, reject) => {
-      logger.info({ rendition: rendition.name, cwd: renditionDir }, "Starting high-speed FFmpeg rendition spawn");
+    // Adaptive CPU Thread Allocation for Linux/Windows/Mac
+    const totalCpus = os.cpus()?.length || 2;
+    // On low-end 2-core / 4-core servers, leave 1 thread free for OS/API
+    const safeThreads = encoder.isHardware ? 2 : Math.max(1, Math.min(4, totalCpus - 1));
 
-      const proc = spawn(resolvedFfmpegPath, args, {
-        cwd: renditionDir,
-        windowsHide: true,
-      });
+    let completedRenditions = 0;
 
-      let stderrOutput = "";
-      let lastParsedPercent = 0;
+    for (const rendition of renditions) {
+      const renditionDir = path.join(outputDir, rendition.name);
+      const args: string[] = [
+        "-y",
+        "-i", inputPath,
+        "-threads", String(safeThreads),
+        "-c:v", encoder.codec,
+        ...encoder.presetArgs,
+        "-vf", `scale=-2:${rendition.height}`,
+        "-b:v", rendition.videoBitrate,
+        "-maxrate", rendition.maxBitrate,
+        "-bufsize", rendition.bufSize,
+        "-c:a", "aac",
+        "-b:a", rendition.audioBitrate,
+        "-ar", "44100",
+        "-ac", "2",
+        "-g", "60",
+        "-keyint_min", "60",
+        "-sc_threshold", "0",
+        "-hls_time", "6",
+        "-hls_list_size", "0",
+        "-hls_segment_type", "mpegts",
+        "-hls_segment_filename", path.join(renditionDir, "segment_%03d.ts"),
+        path.join(renditionDir, "index.m3u8"),
+      ];
 
-      proc.stderr.on("data", (data) => {
-        const str = data.toString();
-        stderrOutput += str;
+      await new Promise<void>((resolve, reject) => {
+        logger.info(
+          {
+            rendition: rendition.name,
+            encoder: encoder.name,
+            safeThreads,
+            platform: process.platform,
+          },
+          "Generating cross-platform HLS rendition stream"
+        );
 
-        // Accurate FFmpeg progress parsing from stderr: time=00:01:23.45
-        if (onProgress && totalDurationSeconds > 0) {
-          const timeMatch = str.match(/time=(\d+):(\d+):(\d+\.?\d*)/);
-          if (timeMatch) {
-            const hours = parseInt(timeMatch[1], 10);
-            const minutes = parseInt(timeMatch[2], 10);
-            const seconds = parseFloat(timeMatch[3]);
-            const currentSeconds = hours * 3600 + minutes * 60 + seconds;
-            const percent = Math.min(99, Math.round((currentSeconds / totalDurationSeconds) * 100));
+        const proc = spawn(resolvedFfmpegPath, args, {
+          cwd: renditionDir,
+          windowsHide: true,
+        });
 
-            if (percent > lastParsedPercent) {
-              lastParsedPercent = percent;
-              onProgress(percent);
+        let stderrOutput = "";
+        let lastParsedPercent = 0;
+
+        proc.stderr.on("data", (data) => {
+          const str = data.toString();
+          stderrOutput += str;
+
+          if (onProgress && totalDurationSeconds > 0) {
+            const timeMatch = str.match(/time=(\d+):(\d+):(\d+\.?\d*)/);
+            if (timeMatch) {
+              const hours = parseInt(timeMatch[1], 10);
+              const minutes = parseInt(timeMatch[2], 10);
+              const seconds = parseFloat(timeMatch[3]);
+              const currentSeconds = hours * 3600 + minutes * 60 + seconds;
+              const rawPercent = Math.min(99, Math.round((currentSeconds / totalDurationSeconds) * 100));
+
+              if (rawPercent > lastParsedPercent) {
+                lastParsedPercent = rawPercent;
+                const overallPercent = Math.round(
+                  ((completedRenditions + rawPercent / 100) / renditions.length) * 100
+                );
+                onProgress(overallPercent);
+              }
             }
           }
-        }
-      });
+        });
 
-      proc.on("error", (err) => {
-        logger.error({ err, rendition: rendition.name }, "Failed to spawn FFmpeg process");
-        reject(err);
-      });
+        proc.on("error", (err) => {
+          logger.error({ err, rendition: rendition.name }, "FFmpeg process failed to spawn");
+          reject(err);
+        });
 
-      proc.on("close", (code) => {
-        if (code === 0) {
-          logger.info({ rendition: rendition.name }, "Rendition generated successfully");
-          if (onProgress) onProgress(100);
-          resolve();
-        } else {
-          logger.error({ code, stderr: stderrOutput.slice(-1000) }, "FFmpeg process failed");
-          reject(new Error(`FFmpeg exited with code ${code}: ${stderrOutput.slice(-500)}`));
-        }
+        proc.on("close", (code) => {
+          if (code === 0) {
+            logger.info({ rendition: rendition.name }, "Rendition generated successfully");
+            completedRenditions++;
+            resolve();
+          } else {
+            logger.error({ code, stderr: stderrOutput.slice(-1000) }, "FFmpeg rendition process failed");
+            reject(new Error(`FFmpeg exited with code ${code}: ${stderrOutput.slice(-500)}`));
+          }
+        });
       });
-    });
+    }
   }
 
   /**
@@ -257,7 +282,10 @@ export class FFmpegService {
     }
 
     await fs.writeFile(masterPath, content, "utf8");
-    logger.info({ masterPath }, "Master HLS playlist written successfully");
+    logger.info(
+      { masterPath, renditions: renditions.map((r) => r.name) },
+      "Master HLS playlist written successfully"
+    );
     return masterPath;
   }
 }
