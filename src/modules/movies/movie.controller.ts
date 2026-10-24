@@ -4,6 +4,7 @@ import { Movie } from "./movie.model";
 import { StorageAccount } from "../storage/storage.model";
 import { R2Service } from "../storage/r2.service";
 import { sendSuccess } from "../../utils/response";
+import { BadRequestError } from "../../utils/errors";
 import { AuditService } from "../audit/audit.service";
 
 export class MovieController {
@@ -314,5 +315,199 @@ export class MovieController {
       next(error);
     }
   }
+
+  public static async streamScreenshotProxy(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const movieId = req.params.id;
+      const filename = req.params.filename || "screenshot_1.jpg";
+
+      const movie = await Movie.findById(movieId);
+      if (!movie) {
+        res.status(404).json({ success: false, message: "Movie not found" });
+        return;
+      }
+
+      const storageId = movie.hlsStorageId || movie.sourceStorageId;
+      if (!storageId) {
+        res.status(404).json({ success: false, message: "No storage account associated with this movie" });
+        return;
+      }
+
+      const storageAccount = await StorageAccount.findById(storageId);
+      if (!storageAccount) {
+        res.status(404).json({ success: false, message: "Storage account not found" });
+        return;
+      }
+
+      const screenshotsPrefix = `movies/${movie.slug}/${movie._id.toString()}/screenshots`;
+      const objectKey = `${screenshotsPrefix}/${filename}`;
+
+      try {
+        const { stream, contentType, contentLength } = await R2Service.getObjectDetailed(
+          storageAccount,
+          objectKey
+        );
+
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+        res.setHeader("Content-Type", contentType || "image/jpeg");
+        res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+        if (contentLength) {
+          res.setHeader("Content-Length", contentLength);
+        }
+
+        stream.pipe(res);
+      } catch (err: any) {
+        if (err?.name === "NoSuchKey" || err?.$metadata?.httpStatusCode === 404) {
+          res.status(404).json({ success: false, message: `Screenshot not found: ${objectKey}` });
+          return;
+        }
+        throw err;
+      }
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public static async streamEpisodeScreenshotProxy(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const movieId = req.params.id;
+      const seasonNum = parseInt(req.params.season, 10);
+      const epNum = parseInt(req.params.episode, 10);
+      const filename = req.params.filename || "screenshot_1.jpg";
+
+      const movie = await Movie.findById(movieId);
+      if (!movie) {
+        res.status(404).json({ success: false, message: "Series not found" });
+        return;
+      }
+
+      const ep = movie.episodes.find(
+        (e) => e.seasonNumber === seasonNum && e.episodeNumber === epNum
+      );
+      if (!ep) {
+        res.status(404).json({ success: false, message: "Episode not found" });
+        return;
+      }
+
+      const storageId = ep.hlsStorageId || ep.sourceStorageId || movie.hlsStorageId || movie.sourceStorageId;
+      if (!storageId) {
+        res.status(404).json({ success: false, message: "Storage account not found" });
+        return;
+      }
+
+      const storageAccount = await StorageAccount.findById(storageId);
+      if (!storageAccount) {
+        res.status(404).json({ success: false, message: "Storage account not found" });
+        return;
+      }
+
+      const screenshotsPrefix = `series/${movie.slug}/season-${seasonNum}/episode-${epNum}/screenshots`;
+      const objectKey = `${screenshotsPrefix}/${filename}`;
+
+      try {
+        const { stream, contentType, contentLength } = await R2Service.getObjectDetailed(
+          storageAccount,
+          objectKey
+        );
+
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+        res.setHeader("Content-Type", contentType || "image/jpeg");
+        res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+        if (contentLength) {
+          res.setHeader("Content-Length", contentLength);
+        }
+
+        stream.pipe(res);
+      } catch (err: any) {
+        if (err?.name === "NoSuchKey" || err?.$metadata?.httpStatusCode === 404) {
+          res.status(404).json({ success: false, message: `Episode screenshot not found: ${objectKey}` });
+          return;
+        }
+        throw err;
+      }
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public static async uploadScreenshot(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const movieId = req.params.id;
+      const season = req.body.seasonNumber ? parseInt(req.body.seasonNumber, 10) : undefined;
+      const episode = req.body.episodeNumber ? parseInt(req.body.episodeNumber, 10) : undefined;
+
+      let buffer: Buffer;
+      let mimeType = "image/jpeg";
+      let originalName = "screenshot.jpg";
+
+      if (req.body?.image && typeof req.body.image === "string") {
+        const match = req.body.image.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+        if (match) {
+          mimeType = match[1];
+          buffer = Buffer.from(match[2], "base64");
+        } else {
+          buffer = Buffer.from(req.body.image, "base64");
+        }
+        if (req.body.filename) originalName = req.body.filename;
+      } else if (Buffer.isBuffer(req.body)) {
+        buffer = req.body;
+        mimeType = (req.headers["content-type"] as string) || "image/jpeg";
+        originalName = (req.headers["x-filename"] as string) || "screenshot.jpg";
+      } else {
+        throw new BadRequestError("Invalid image data. Provide base64 'image' string or binary image body", "INVALID_REQUEST");
+      }
+
+      const result = await MovieService.uploadCustomScreenshot(movieId, buffer, originalName, mimeType, season, episode);
+      sendSuccess(res, result, "Screenshot uploaded successfully", 201);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public static async uploadImage(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      let buffer: Buffer;
+      let mimeType = "image/jpeg";
+      let originalName = "image.jpg";
+
+      if (req.body?.image && typeof req.body.image === "string") {
+        const match = req.body.image.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+        if (match) {
+          mimeType = match[1];
+          buffer = Buffer.from(match[2], "base64");
+        } else {
+          buffer = Buffer.from(req.body.image, "base64");
+        }
+        if (req.body.filename) originalName = req.body.filename;
+      } else if (Buffer.isBuffer(req.body)) {
+        buffer = req.body;
+        mimeType = (req.headers["content-type"] as string) || "image/jpeg";
+        originalName = (req.headers["x-filename"] as string) || "image.jpg";
+      } else {
+        throw new BadRequestError("Invalid image data", "INVALID_REQUEST");
+      }
+
+      const result = await MovieService.uploadGeneralImage(buffer, originalName, mimeType);
+      sendSuccess(res, result, "Image uploaded successfully", 201);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public static async captureScreenshots(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const movieId = req.params.id;
+      const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
+      const episode = req.query.episode ? parseInt(req.query.episode as string, 10) : undefined;
+
+      const screenshots = await MovieService.captureScreenshots(movieId, season, episode);
+      sendSuccess(res, { screenshots }, "Screenshots captured successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
 }
 

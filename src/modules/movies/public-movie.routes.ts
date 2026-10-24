@@ -11,10 +11,12 @@ router.get("/:id", MovieController.getById);
 router.get("/:id/playback", MovieController.getPlayback);
 router.get("/:id/stream", MovieController.streamHlsProxy);
 router.get("/:id/stream/*", MovieController.streamHlsProxy);
+router.get("/:id/screenshots/:filename", MovieController.streamScreenshotProxy);
 
 // Episode specific playback and HLS streaming routes
 router.get("/:id/seasons/:season/episodes/:episode/playback", MovieController.getEpisodePlayback);
 router.get("/:id/seasons/:season/episodes/:episode/stream", MovieController.streamEpisodeHlsProxy);
 router.get("/:id/seasons/:season/episodes/:episode/stream/*", MovieController.streamEpisodeHlsProxy);
+router.get("/:id/seasons/:season/episodes/:episode/screenshots/:filename", MovieController.streamEpisodeScreenshotProxy);
 
 export default router;

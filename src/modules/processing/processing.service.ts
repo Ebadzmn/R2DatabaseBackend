@@ -9,6 +9,7 @@ import { R2Service } from "../storage/r2.service";
 import { MediaMetadataService, MediaProbeResult } from "../../services/media-metadata.service";
 import { FFmpegService, RenditionConfig } from "./ffmpeg.service";
 import { logger } from "../../utils/logger";
+import { env } from "../../config/env";
 
 export class ProcessingService {
   /**
@@ -38,6 +39,7 @@ export class ProcessingService {
     const workDir = path.join(process.cwd(), "tmp", `proc-${movieId}-${Date.now()}`);
     const sourceFilePath = path.join(workDir, path.basename(sourceObjectKey));
     const hlsOutputDir = path.join(workDir, "hls");
+    const screenshotsOutputDir = path.join(workDir, "screenshots");
 
     const updateProcessingProgress = async (progressPercent: number) => {
       if (session) {
@@ -75,6 +77,7 @@ export class ProcessingService {
     try {
       await fs.mkdir(workDir, { recursive: true });
       await fs.mkdir(hlsOutputDir, { recursive: true });
+      await fs.mkdir(screenshotsOutputDir, { recursive: true });
 
       await updateProcessingProgress(5);
 
@@ -175,22 +178,39 @@ export class ProcessingService {
         (percent) => {
           const overall = 20 + Math.round((percent / 100) * 60);
           updateProcessingProgress(overall).catch(() => {});
-        }
+        },
+        probe.audioTracks > 0
       );
 
       // 5. Generate master.m3u8 playlist combining all renditions
       await FFmpegService.generateMasterPlaylist(hlsOutputDir, renditions);
 
-      await updateProcessingProgress(80);
+      // 5.5. Extract 4 Preview Screenshots
+      logger.info({ movieId, totalDuration }, "Extracting 4 preview screenshots from video");
+      let capturedScreenshots: string[] = [];
+      try {
+        capturedScreenshots = await FFmpegService.generateScreenshots(
+          sourceInput,
+          screenshotsOutputDir,
+          totalDuration,
+          4
+        );
+      } catch (ssErr: any) {
+        logger.warn({ ssErr: ssErr?.message, movieId }, "Preview screenshot extraction skipped due to error");
+      }
 
-      // 6. Upload all generated HLS files to R2
+      await updateProcessingProgress(82);
+
+      // 6. Upload all generated HLS files and screenshots to R2
       logger.info({ movieId, hlsOutputDir }, "Uploading HLS files to R2 bucket");
 
       let hlsPrefix = `movies/${movie.slug}/${movie._id.toString()}/hls`;
+      let screenshotsPrefix = `movies/${movie.slug}/${movie._id.toString()}/screenshots`;
       if (isEpisode && session) {
         const sNum = session.seasonNumber || 1;
         const eNum = session.episodeNumber || 1;
         hlsPrefix = `series/${movie.slug}/season-${sNum}/episode-${eNum}/hls`;
+        screenshotsPrefix = `series/${movie.slug}/season-${sNum}/episode-${eNum}/screenshots`;
       }
 
       await updateProcessingProgress(85);
@@ -200,7 +220,7 @@ export class ProcessingService {
         hlsOutputDir,
         hlsPrefix,
         async (uploaded, total) => {
-          const p = Math.min(99, 85 + Math.round((uploaded / total) * 14));
+          const p = Math.min(97, 85 + Math.round((uploaded / total) * 12));
           if (p > lastUploadPercent) {
             lastUploadPercent = p;
             await updateProcessingProgress(p);
@@ -208,27 +228,52 @@ export class ProcessingService {
         }
       );
 
-      // Account for the additional storage used by the HLS segments
+      // Upload screenshots to R2 if captured
+      let screenshotBytes = 0;
+      const screenshotUrls: string[] = [];
+      if (capturedScreenshots.length > 0) {
+        screenshotBytes = await this.uploadDirectoryToR2(
+          storageAccount,
+          screenshotsOutputDir,
+          screenshotsPrefix
+        );
+
+        const cdnBase = (storageAccount.publicUrl || env.STREAMING_BASE_URL || "").replace(/\/+$/, "");
+        for (let i = 1; i <= capturedScreenshots.length; i++) {
+          const key = `${screenshotsPrefix}/screenshot_${i}.jpg`;
+          const proxyPath = isEpisode && session
+            ? `/api/movies/${movie._id.toString()}/seasons/${session.seasonNumber || 1}/episodes/${session.episodeNumber || 1}/screenshots/screenshot_${i}.jpg`
+            : `/api/movies/${movie._id.toString()}/screenshots/screenshot_${i}.jpg`;
+          screenshotUrls.push(cdnBase ? `${cdnBase}/${key}` : proxyPath);
+        }
+        logger.info({ movieId, count: screenshotUrls.length, screenshotUrls }, "4 Preview screenshots uploaded to R2");
+      }
+
+      // Account for the additional storage used by HLS segments and screenshots
       await StorageAccount.findByIdAndUpdate(storageAccount._id, {
-        $inc: { usedStorageBytes: uploadedBytes },
+        $inc: { usedStorageBytes: uploadedBytes + screenshotBytes },
       });
 
       // 7. Update Movie or Episode status to READY
       const masterKey = `${hlsPrefix}/master.m3u8`;
 
       if (isEpisode && session) {
+        const epUpdateFields: any = {
+          "episodes.$.status": "READY",
+          "episodes.$.hlsMasterKey": masterKey,
+          "episodes.$.hlsStorageId": storageAccount._id,
+          "episodes.$.processingProgress": 100,
+          "episodes.$.processingError": null,
+        };
+        if (screenshotUrls.length > 0) {
+          epUpdateFields["episodes.$.screenshots"] = screenshotUrls;
+          epUpdateFields["episodes.$.stillPath"] = screenshotUrls[0];
+        }
+
         if (session.episodeId) {
           await Movie.updateOne(
             { _id: movie._id, "episodes._id": session.episodeId },
-            {
-              $set: {
-                "episodes.$.status": "READY",
-                "episodes.$.hlsMasterKey": masterKey,
-                "episodes.$.hlsStorageId": storageAccount._id,
-                "episodes.$.processingProgress": 100,
-                "episodes.$.processingError": null
-              }
-            }
+            { $set: epUpdateFields }
           );
         } else if (session.seasonNumber && session.episodeNumber) {
           await Movie.updateOne(
@@ -237,15 +282,7 @@ export class ProcessingService {
               "episodes.seasonNumber": session.seasonNumber,
               "episodes.episodeNumber": session.episodeNumber
             },
-            {
-              $set: {
-                "episodes.$.status": "READY",
-                "episodes.$.hlsMasterKey": masterKey,
-                "episodes.$.hlsStorageId": storageAccount._id,
-                "episodes.$.processingProgress": 100,
-                "episodes.$.processingError": null
-              }
-            }
+            { $set: epUpdateFields }
           );
         }
 
@@ -254,14 +291,25 @@ export class ProcessingService {
           $set: { status: "READY" }
         });
       } else {
+        const movieUpdateFields: any = {
+          status: "READY",
+          hlsMasterKey: masterKey,
+          hlsStorageId: storageAccount._id,
+          processingProgress: 100,
+          processingError: null,
+        };
+        if (screenshotUrls.length > 0) {
+          movieUpdateFields.screenshots = screenshotUrls;
+          if (!movie.backdrop) {
+            movieUpdateFields.backdrop = screenshotUrls[0];
+          }
+          if (!movie.poster) {
+            movieUpdateFields.poster = screenshotUrls[0];
+          }
+        }
+
         await Movie.findByIdAndUpdate(movie._id, {
-          $set: {
-            status: "READY",
-            hlsMasterKey: masterKey,
-            hlsStorageId: storageAccount._id,
-            processingProgress: 100,
-            processingError: null,
-          },
+          $set: movieUpdateFields,
         });
       }
 
@@ -319,7 +367,7 @@ export class ProcessingService {
   /**
    * Recursively uploads a local directory to R2 with proper MIME types and returns total bytes uploaded
    */
-  private static async uploadDirectoryToR2(
+  public static async uploadDirectoryToR2(
     storageAccount: StorageAccountType,
     localDir: string,
     r2Prefix: string,
@@ -350,6 +398,10 @@ export class ProcessingService {
             contentType = "application/vnd.apple.mpegurl";
           } else if (entry.name.endsWith(".ts")) {
             contentType = "video/mp2t";
+          } else if (entry.name.endsWith(".jpg") || entry.name.endsWith(".jpeg")) {
+            contentType = "image/jpeg";
+          } else if (entry.name.endsWith(".webp")) {
+            contentType = "image/webp";
           }
 
           filesToUpload.push({ fullPath: fullLocalPath, r2Key, contentType });

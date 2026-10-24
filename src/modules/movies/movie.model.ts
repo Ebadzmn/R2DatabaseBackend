@@ -25,6 +25,7 @@ export interface IEpisode {
   status: MovieStatus;
   processingProgress?: number;
   processingError?: string;
+  screenshots?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -59,6 +60,7 @@ export interface IMovie extends Document {
   status: MovieStatus;
   processingProgress?: number;
   processingError?: string;
+  screenshots?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -89,7 +91,8 @@ const episodeSchema = new Schema<IEpisode>(
       required: true
     },
     processingProgress: { type: Number, default: 0 },
-    processingError: { type: String }
+    processingError: { type: String },
+    screenshots: { type: [String], default: [] }
   },
   {
     timestamps: true
@@ -136,7 +139,8 @@ const movieSchema = new Schema<IMovie>(
       required: true
     },
     processingProgress: { type: Number, default: 0 },
-    processingError: { type: String }
+    processingError: { type: String },
+    screenshots: { type: [String], default: [] }
   },
   {
     timestamps: true

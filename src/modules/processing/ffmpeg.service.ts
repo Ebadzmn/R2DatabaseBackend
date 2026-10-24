@@ -1,6 +1,7 @@
 import { spawn, execSync } from "child_process";
 import path from "path";
 import fs from "fs/promises";
+import fsSync from "fs";
 import os from "os";
 import { env } from "../../config/env";
 import { logger } from "../../utils/logger";
@@ -20,6 +21,26 @@ try {
   }
 } catch (e) {
   logger.warn({ err: e }, "Could not set automatic ffmpeg path, relying on system PATH");
+}
+
+/**
+ * Resolves the path to the CineCore welcome voice audio file
+ */
+export function getWelcomeAudioPath(): string | null {
+  const candidatePaths = [
+    path.resolve(process.cwd(), "assets", "audio", "welcomecinecore.mp3"),
+    path.resolve(process.cwd(), "R2DatabaseBackend", "assets", "audio", "welcomecinecore.mp3"),
+    path.resolve(__dirname, "../../../assets/audio/welcomecinecore.mp3"),
+    path.resolve(__dirname, "../../assets/audio/welcomecinecore.mp3"),
+    "C:\\MY PROJECT\\R2SYSTEM\\R2DatabaseBackend\\assets\\audio\\welcomecinecore.mp3",
+  ];
+
+  for (const p of candidatePaths) {
+    if (fsSync.existsSync(p)) {
+      return p;
+    }
+  }
+  return null;
 }
 
 /**
@@ -162,9 +183,14 @@ export class FFmpegService {
     outputDir: string,
     renditions: RenditionConfig[],
     totalDurationSeconds = 0,
-    onProgress?: (percent: number) => void
+    onProgress?: (percent: number) => void,
+    hasAudio = true
   ): Promise<void> {
     const encoder = detectBestEncoder();
+    const welcomeAudio = getWelcomeAudioPath();
+    if (welcomeAudio) {
+      logger.info({ welcomeAudio }, "CineCore welcome voice intro audio detected for overlay");
+    }
 
     // Ensure rendition directories exist
     for (const r of renditions) {
@@ -180,9 +206,27 @@ export class FFmpegService {
 
     for (const rendition of renditions) {
       const renditionDir = path.join(outputDir, rendition.name);
+
+      const inputArgs: string[] = ["-y", "-i", inputPath];
+      const audioFilterArgs: string[] = [];
+
+      if (welcomeAudio && hasAudio) {
+        inputArgs.push("-i", welcomeAudio);
+        audioFilterArgs.push(
+          "-filter_complex",
+          "[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[main_a];[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume=1.8[intro_a];[main_a][intro_a]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+          "-map",
+          "0:v",
+          "-map",
+          "[aout]"
+        );
+      } else if (welcomeAudio && !hasAudio) {
+        inputArgs.push("-i", welcomeAudio);
+        audioFilterArgs.push("-map", "0:v", "-map", "1:a");
+      }
+
       const args: string[] = [
-        "-y",
-        "-i", inputPath,
+        ...inputArgs,
         "-threads", String(safeThreads),
         "-c:v", encoder.codec,
         ...encoder.presetArgs,
@@ -190,6 +234,7 @@ export class FFmpegService {
         "-b:v", rendition.videoBitrate,
         "-maxrate", rendition.maxBitrate,
         "-bufsize", rendition.bufSize,
+        ...audioFilterArgs,
         "-c:a", "aac",
         "-b:a", rendition.audioBitrate,
         "-ar", "44100",
@@ -269,6 +314,56 @@ export class FFmpegService {
   /**
    * Generates master.m3u8 playlist combining all generated renditions
    */
+  /**
+   * Extracts 4 evenly distributed preview screenshots from video
+   */
+  public static async generateScreenshots(
+    inputPath: string,
+    outputDir: string,
+    totalDurationSeconds: number,
+    count = 4
+  ): Promise<string[]> {
+    await fs.mkdir(outputDir, { recursive: true });
+
+    const safeDuration = totalDurationSeconds > 0 ? totalDurationSeconds : 60;
+    // 20%, 40%, 60%, 80% to avoid black intro/credits
+    const percentages = [0.20, 0.40, 0.60, 0.80];
+    const generatedFiles: string[] = [];
+
+    for (let i = 0; i < count; i++) {
+      const pct = percentages[i] !== undefined ? percentages[i] : (i + 1) / (count + 1);
+      const timestampSec = Math.max(1, Math.round(safeDuration * pct));
+      const filename = `screenshot_${i + 1}.jpg`;
+      const outputPath = path.join(outputDir, filename);
+
+      const args = [
+        "-y",
+        "-ss", String(timestampSec),
+        "-i", inputPath,
+        "-vframes", "1",
+        "-q:v", "2",
+        outputPath,
+      ];
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn(resolvedFfmpegPath, args, { windowsHide: true });
+          proc.on("error", reject);
+          proc.on("close", (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`FFmpeg screenshot failed with exit code ${code}`));
+          });
+        });
+        generatedFiles.push(outputPath);
+        logger.info({ filename, timestampSec }, "Captured video preview screenshot frame");
+      } catch (err: any) {
+        logger.warn({ err: err?.message, filename, timestampSec }, "Failed to capture preview screenshot, continuing...");
+      }
+    }
+
+    return generatedFiles;
+  }
+
   public static async generateMasterPlaylist(
     outputDir: string,
     renditions: RenditionConfig[]

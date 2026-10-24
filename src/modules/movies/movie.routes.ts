@@ -19,6 +19,10 @@ router.patch("/:id", validateRequest(updateMovieSchema), MovieController.update)
 router.delete("/:id", MovieController.delete);
 
 router.post("/:id/process", MovieController.process);
+router.post("/upload-image", MovieController.uploadImage);
+router.post("/:id/screenshots/upload", MovieController.uploadScreenshot);
+router.post("/:id/screenshots/capture", MovieController.captureScreenshots);
+router.get("/:id/screenshots/:filename", MovieController.streamScreenshotProxy);
 router.post("/:id/reprocess", MovieController.reprocess);
 router.get("/:id/status", MovieController.getStatus);
 

@@ -1,3 +1,8 @@
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
+import { FFmpegService } from "../processing/ffmpeg.service";
+import { MediaMetadataService } from "../../services/media-metadata.service";
 import { Types } from "mongoose";
 import { Movie, IMovie, IEpisode } from "./movie.model";
 import { StorageAccount } from "../storage/storage.model";
@@ -107,21 +112,22 @@ export class MovieService {
       movie.slug = `${slugify(input.title)}-${Date.now().toString().slice(-4)}`;
     }
 
-    if (input.description !== undefined) movie.description = input.description;
-    if (input.poster !== undefined) movie.poster = input.poster;
-    if (input.backdrop !== undefined) movie.backdrop = input.backdrop;
+    if (input.description !== undefined) movie.description = input.description ?? undefined;
+    if (input.poster !== undefined) movie.poster = input.poster ?? undefined;
+    if (input.backdrop !== undefined) movie.backdrop = input.backdrop ?? undefined;
     if (input.type) movie.type = input.type;
-    if (input.releaseYear !== undefined) movie.releaseYear = input.releaseYear;
-    if (input.genres) movie.genres = input.genres;
-    if (input.duration !== undefined) movie.duration = input.duration;
-    if (input.rating !== undefined) movie.rating = input.rating;
-    if (input.director !== undefined) movie.director = input.director;
-    if (input.trailerUrl !== undefined) movie.trailerUrl = input.trailerUrl;
-    if (input.tmdbId !== undefined) movie.tmdbId = input.tmdbId;
-    if (input.cast !== undefined) movie.cast = input.cast;
-    if (input.totalSeasons !== undefined) movie.totalSeasons = input.totalSeasons;
-    if (input.episodes !== undefined) movie.episodes = input.episodes;
+    if (input.releaseYear !== undefined) movie.releaseYear = input.releaseYear ?? undefined;
+    if (input.genres !== undefined) movie.genres = input.genres ?? [];
+    if (input.duration !== undefined) movie.duration = input.duration ?? undefined;
+    if (input.rating !== undefined) movie.rating = input.rating ?? undefined;
+    if (input.director !== undefined) movie.director = input.director ?? undefined;
+    if (input.trailerUrl !== undefined) movie.trailerUrl = input.trailerUrl ?? undefined;
+    if (input.tmdbId !== undefined) movie.tmdbId = input.tmdbId ?? undefined;
+    if (input.cast !== undefined) movie.cast = input.cast ?? [];
+    if (input.totalSeasons !== undefined) movie.totalSeasons = input.totalSeasons ?? 1;
+    if (input.episodes !== undefined && input.episodes !== null) movie.episodes = input.episodes;
     if (input.status) movie.status = input.status;
+    if (input.screenshots !== undefined) movie.screenshots = input.screenshots ?? [];
 
     await movie.save();
     return movie;
@@ -138,6 +144,7 @@ export class MovieService {
       duration?: number;
       airDate?: string;
       rating?: number;
+      screenshots?: string[];
     }
   ) {
     const movie = await Movie.findById(movieId);
@@ -193,6 +200,7 @@ export class MovieService {
     if (data.duration !== undefined) ep.duration = data.duration;
     if (data.airDate !== undefined) ep.airDate = data.airDate;
     if (data.rating !== undefined) ep.rating = data.rating;
+    if (data.screenshots !== undefined) ep.screenshots = data.screenshots;
 
     await movie.save();
     return ep;
@@ -349,6 +357,222 @@ export class MovieService {
       sourceUrl: directSourceUrl,
       duration: ep.duration
     };
+  }
+
+  /**
+   * Captures 4 preview screenshots on demand for a movie or episode
+   */
+  /**
+   * Uploads a custom user-provided screenshot to R2 and attaches it to the movie or episode
+   */
+  public static async uploadCustomScreenshot(
+    movieId: string,
+    buffer: Buffer,
+    originalName: string,
+    mimeType: string,
+    seasonNumber?: number,
+    episodeNumber?: number
+  ): Promise<{ url: string; screenshots: string[] }> {
+    const movie = await Movie.findById(movieId);
+    if (!movie) {
+      throw new NotFoundError("Movie not found", "MOVIE_NOT_FOUND");
+    }
+
+    const isEpisode = seasonNumber !== undefined && episodeNumber !== undefined;
+    let ep: IEpisode | undefined;
+    if (isEpisode) {
+      ep = movie.episodes.find(
+        (e) => e.seasonNumber === seasonNumber && e.episodeNumber === episodeNumber
+      );
+      if (!ep) {
+        throw new NotFoundError("Episode not found in series", "EPISODE_NOT_FOUND");
+      }
+    }
+
+    const storageId = (isEpisode ? ep?.hlsStorageId || ep?.sourceStorageId : null) || movie.hlsStorageId || movie.sourceStorageId;
+    let storageAccount: any = storageId ? await StorageAccount.findById(storageId) : null;
+    if (!storageAccount) {
+      storageAccount = await StorageManagerService.selectStorage(buffer.length);
+    }
+
+    let ext = ".jpg";
+    if (mimeType.includes("png") || originalName.endsWith(".png")) ext = ".png";
+    else if (mimeType.includes("webp") || originalName.endsWith(".webp")) ext = ".webp";
+
+    const cleanBaseName = slugify(path.parse(originalName).name) || "screenshot";
+    const filename = `manual_${Date.now()}_${cleanBaseName}${ext}`;
+
+    let key = `movies/${movie.slug}/${movie._id.toString()}/screenshots/${filename}`;
+    if (isEpisode) {
+      key = `series/${movie.slug}/season-${seasonNumber}/episode-${episodeNumber}/screenshots/${filename}`;
+    }
+
+    await R2Service.putObject(storageAccount, key, buffer, mimeType);
+
+    await StorageAccount.findByIdAndUpdate(storageAccount._id, {
+      $inc: { usedStorageBytes: buffer.length }
+    });
+
+    const cdnBase = (storageAccount.publicUrl || env.STREAMING_BASE_URL || "").replace(/\/+$/, "");
+    const proxyPath = isEpisode
+      ? `/api/movies/${movie._id.toString()}/seasons/${seasonNumber}/episodes/${episodeNumber}/screenshots/${filename}`
+      : `/api/movies/${movie._id.toString()}/screenshots/${filename}`;
+    const finalUrl = cdnBase ? `${cdnBase}/${key}` : proxyPath;
+
+    if (isEpisode && ep) {
+      ep.screenshots = [...(ep.screenshots || []), finalUrl];
+      if (!ep.stillPath) ep.stillPath = finalUrl;
+      await movie.save();
+      return { url: finalUrl, screenshots: ep.screenshots };
+    } else {
+      movie.screenshots = [...(movie.screenshots || []), finalUrl];
+      if (!movie.backdrop) movie.backdrop = finalUrl;
+      if (!movie.poster) movie.poster = finalUrl;
+      await movie.save();
+      return { url: finalUrl, screenshots: movie.screenshots };
+    }
+  }
+
+  /**
+   * Uploads any general image to R2 (used for poster, backdrop, or new movie creation)
+   */
+  public static async uploadGeneralImage(
+    buffer: Buffer,
+    originalName: string,
+    mimeType: string
+  ): Promise<{ url: string; key: string }> {
+    const storageAccount = await StorageManagerService.selectStorage(buffer.length);
+
+    let ext = ".jpg";
+    if (mimeType.includes("png") || originalName.endsWith(".png")) ext = ".png";
+    else if (mimeType.includes("webp") || originalName.endsWith(".webp")) ext = ".webp";
+
+    const cleanBaseName = slugify(path.parse(originalName).name) || "image";
+    const filename = `custom_${Date.now()}_${cleanBaseName}${ext}`;
+    const key = `uploads/images/${filename}`;
+
+    await R2Service.putObject(storageAccount, key, buffer, mimeType);
+
+    await StorageAccount.findByIdAndUpdate(storageAccount._id, {
+      $inc: { usedStorageBytes: buffer.length }
+    });
+
+    const cdnBase = (storageAccount.publicUrl || env.STREAMING_BASE_URL || "").replace(/\/+$/, "");
+    const url = cdnBase ? `${cdnBase}/${key}` : `/uploads/images/${filename}`;
+
+    return { url, key };
+  }
+
+  public static async captureScreenshots(
+    movieId: string,
+    seasonNumber?: number,
+    episodeNumber?: number
+  ): Promise<string[]> {
+    const movie = await Movie.findById(movieId);
+    if (!movie) {
+      throw new NotFoundError("Movie not found", "MOVIE_NOT_FOUND");
+    }
+
+    const isEpisode = seasonNumber !== undefined && episodeNumber !== undefined;
+    let ep: IEpisode | undefined;
+    if (isEpisode) {
+      ep = movie.episodes.find(
+        (e) => e.seasonNumber === seasonNumber && e.episodeNumber === episodeNumber
+      );
+      if (!ep) {
+        throw new NotFoundError("Episode not found in series", "EPISODE_NOT_FOUND");
+      }
+    }
+
+    const storageId = (isEpisode ? ep?.hlsStorageId || ep?.sourceStorageId : null) || movie.hlsStorageId || movie.sourceStorageId;
+    if (!storageId) {
+      throw new BadRequestError("Movie does not have an associated storage account", "INVALID_REQUEST");
+    }
+
+    const storageAccount = await StorageAccount.findById(storageId);
+    if (!storageAccount) {
+      throw new NotFoundError("Storage account not found", "STORAGE_NOT_FOUND");
+    }
+
+    // Determine source input key or stream
+    const sourceKey = (isEpisode ? ep?.sourceObjectKey : null) || movie.sourceObjectKey;
+    const hlsKey = (isEpisode ? ep?.hlsMasterKey : null) || movie.hlsMasterKey;
+
+    let sourceInput = "";
+    if (storageAccount.publicUrl && sourceKey) {
+      const cleanBase = storageAccount.publicUrl.replace(/\/+$/, "");
+      const cleanKey = sourceKey.replace(/^\/+/, "");
+      sourceInput = `${cleanBase}/${cleanKey}`;
+    } else if (sourceKey) {
+      sourceInput = await R2Service.getPresignedGetUrl(storageAccount, sourceKey, 3600);
+    } else if (storageAccount.publicUrl && hlsKey) {
+      const cleanBase = storageAccount.publicUrl.replace(/\/+$/, "");
+      const cleanKey = hlsKey.replace(/^\/+/, "");
+      sourceInput = `${cleanBase}/${cleanKey}`;
+    } else if (hlsKey) {
+      sourceInput = await R2Service.getPresignedGetUrl(storageAccount, hlsKey, 3600);
+    }
+
+    if (!sourceInput) {
+      throw new BadRequestError("No valid video source found to extract screenshots from", "INVALID_REQUEST");
+    }
+
+    let duration = (isEpisode ? ep?.duration : movie.duration) || 0;
+    if (duration <= 0) {
+      try {
+        const probe = await MediaMetadataService.probe(sourceInput);
+        duration = probe.duration || 60;
+      } catch (e) {
+        duration = 60;
+      }
+    }
+
+    const tempDir = path.join(os.tmpdir(), `capt-ss-${movieId}-${Date.now()}`);
+    await fs.mkdir(tempDir, { recursive: true });
+
+    try {
+      const captured = await FFmpegService.generateScreenshots(sourceInput, tempDir, duration, 4);
+
+      let screenshotsPrefix = `movies/${movie.slug}/${movie._id.toString()}/screenshots`;
+      if (isEpisode) {
+        screenshotsPrefix = `series/${movie.slug}/season-${seasonNumber}/episode-${episodeNumber}/screenshots`;
+      }
+
+      await ProcessingService.uploadDirectoryToR2(storageAccount, tempDir, screenshotsPrefix);
+
+      const cdnBase = (storageAccount.publicUrl || env.STREAMING_BASE_URL || "").replace(/\/+$/, "");
+      const screenshotUrls: string[] = [];
+
+      for (let i = 1; i <= captured.length; i++) {
+        const key = `${screenshotsPrefix}/screenshot_${i}.jpg`;
+        const proxyPath = isEpisode
+          ? `/api/movies/${movie._id.toString()}/seasons/${seasonNumber}/episodes/${episodeNumber}/screenshots/screenshot_${i}.jpg`
+          : `/api/movies/${movie._id.toString()}/screenshots/screenshot_${i}.jpg`;
+        screenshotUrls.push(cdnBase ? `${cdnBase}/${key}` : proxyPath);
+      }
+
+      if (isEpisode && ep) {
+        ep.screenshots = screenshotUrls;
+        if (!ep.stillPath && screenshotUrls.length > 0) {
+          ep.stillPath = screenshotUrls[0];
+        }
+      } else {
+        movie.screenshots = screenshotUrls;
+        if (!movie.backdrop && screenshotUrls.length > 0) {
+          movie.backdrop = screenshotUrls[0];
+        }
+        if (!movie.poster && screenshotUrls.length > 0) {
+          movie.poster = screenshotUrls[0];
+        }
+      }
+
+      await movie.save();
+      return screenshotUrls;
+    } finally {
+      try {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      } catch (e) {}
+    }
   }
 
   public static async delete(id: string): Promise<void> {

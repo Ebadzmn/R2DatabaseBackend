@@ -1,61 +1,114 @@
 import { z } from "zod";
 
 export const createMovieSchema = z.object({
-  body: z.object({
-    title: z.string().min(1, "Title is required"),
-    description: z.string().optional(),
-    poster: z.string().url().optional().or(z.literal("")),
-    backdrop: z.string().url().optional().or(z.literal("")),
-    type: z.enum(["MOVIE", "SERIES"]).default("MOVIE"),
-    releaseYear: z.number().int().min(1888).max(2100).optional(),
-    genres: z.array(z.string()).default([]),
-    duration: z.number().optional(),
-    rating: z.number().optional(),
-    director: z.string().optional(),
-    trailerUrl: z.string().url().optional().or(z.literal("")),
-    tmdbId: z.number().optional(),
-    cast: z
-      .array(
-        z.object({
-          name: z.string(),
-          character: z.string().optional(),
-          image: z.string().optional()
-        })
-      )
-      .optional()
-  })
+  body: z
+    .object({
+      title: z.string().min(1, "Title is required"),
+      description: z.string().nullable().optional(),
+      poster: z.string().nullable().optional(),
+      backdrop: z.string().nullable().optional(),
+      type: z.enum(["MOVIE", "SERIES"]).default("MOVIE"),
+      releaseYear: z
+        .union([z.number(), z.string(), z.null()])
+        .optional()
+        .transform((val) => {
+          if (val === "" || val === null || val === undefined) return undefined;
+          const num = Number(val);
+          return isNaN(num) ? undefined : num;
+        }),
+      genres: z.array(z.string()).default([]),
+      duration: z
+        .union([z.number(), z.string(), z.null()])
+        .optional()
+        .transform((val) => {
+          if (val === "" || val === null || val === undefined) return undefined;
+          const num = Number(val);
+          return isNaN(num) ? undefined : num;
+        }),
+      rating: z
+        .union([z.number(), z.string(), z.null()])
+        .optional()
+        .transform((val) => {
+          if (val === "" || val === null || val === undefined) return undefined;
+          const num = Number(val);
+          return isNaN(num) ? undefined : num;
+        }),
+      director: z.string().nullable().optional(),
+      trailerUrl: z.string().nullable().optional(),
+      tmdbId: z
+        .union([z.number(), z.string(), z.null()])
+        .optional()
+        .transform((val) => {
+          if (val === "" || val === null || val === undefined) return undefined;
+          const num = Number(val);
+          return isNaN(num) ? undefined : num;
+        }),
+      screenshots: z.array(z.string()).nullable().optional(),
+      cast: z.array(z.any()).nullable().optional()
+    })
+    .passthrough()
 });
 
 export const updateMovieSchema = z.object({
   params: z.object({
     id: z.string()
   }),
-  body: z.object({
-    title: z.string().min(1).optional(),
-    description: z.string().optional(),
-    poster: z.string().url().optional().or(z.literal("")),
-    backdrop: z.string().url().optional().or(z.literal("")),
-    type: z.enum(["MOVIE", "SERIES"]).optional(),
-    releaseYear: z.number().int().min(1888).max(2100).optional(),
-    genres: z.array(z.string()).optional(),
-    duration: z.number().optional(),
-    rating: z.number().optional(),
-    director: z.string().optional(),
-    trailerUrl: z.string().url().optional().or(z.literal("")),
-    tmdbId: z.number().optional(),
-    cast: z
-      .array(
-        z.object({
-          name: z.string(),
-          character: z.string().optional(),
-          image: z.string().optional()
-        })
-      )
-      .optional(),
-    totalSeasons: z.number().int().min(1).optional(),
-    episodes: z.array(z.any()).optional(),
-    status: z.enum(["DRAFT", "UPLOADING", "PROCESSING", "READY", "FAILED"]).optional()
-  })
+  body: z
+    .object({
+      title: z.string().min(1).optional(),
+      description: z.string().nullable().optional(),
+      poster: z.string().nullable().optional(),
+      backdrop: z.string().nullable().optional(),
+      type: z.enum(["MOVIE", "SERIES"]).optional(),
+      releaseYear: z
+        .union([z.number(), z.string(), z.null()])
+        .optional()
+        .transform((val) => {
+          if (val === "" || val === null || val === undefined) return undefined;
+          const num = Number(val);
+          return isNaN(num) ? undefined : num;
+        }),
+      genres: z.array(z.string()).nullable().optional(),
+      duration: z
+        .union([z.number(), z.string(), z.null()])
+        .optional()
+        .transform((val) => {
+          if (val === "" || val === null || val === undefined) return undefined;
+          const num = Number(val);
+          return isNaN(num) ? undefined : num;
+        }),
+      rating: z
+        .union([z.number(), z.string(), z.null()])
+        .optional()
+        .transform((val) => {
+          if (val === "" || val === null || val === undefined) return undefined;
+          const num = Number(val);
+          return isNaN(num) ? undefined : num;
+        }),
+      director: z.string().nullable().optional(),
+      trailerUrl: z.string().nullable().optional(),
+      tmdbId: z
+        .union([z.number(), z.string(), z.null()])
+        .optional()
+        .transform((val) => {
+          if (val === "" || val === null || val === undefined) return undefined;
+          const num = Number(val);
+          return isNaN(num) ? undefined : num;
+        }),
+      cast: z.array(z.any()).nullable().optional(),
+      screenshots: z.array(z.string()).nullable().optional(),
+      totalSeasons: z
+        .union([z.number(), z.string(), z.null()])
+        .optional()
+        .transform((val) => {
+          if (val === "" || val === null || val === undefined) return undefined;
+          const num = Number(val);
+          return isNaN(num) ? undefined : num;
+        }),
+      episodes: z.array(z.any()).nullable().optional(),
+      status: z.enum(["DRAFT", "UPLOADING", "PROCESSING", "READY", "FAILED"]).optional()
+    })
+    .passthrough()
 });
 
 export const queryMoviesSchema = z.object({
