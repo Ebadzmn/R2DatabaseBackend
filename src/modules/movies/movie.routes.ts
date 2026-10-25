@@ -13,6 +13,7 @@ const router = Router();
 router.use(authenticateAdmin);
 
 router.get("/", validateRequest(queryMoviesSchema), MovieController.getAll);
+router.get("/genres", MovieController.getGenres);
 router.get("/:id", MovieController.getById);
 router.post("/", validateRequest(createMovieSchema), MovieController.create);
 router.patch("/:id", validateRequest(updateMovieSchema), MovieController.update);

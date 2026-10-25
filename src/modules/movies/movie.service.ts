@@ -68,6 +68,38 @@ export class MovieService {
   }
 
   /**
+   * Retrieves all available movie genres with counts
+   */
+  public static async getGenres() {
+    const rawGenres = await Movie.distinct("genres");
+    const counts = await Movie.aggregate([
+      { $unwind: "$genres" },
+      { $group: { _id: "$genres", count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]);
+
+    const countMap: Record<string, number> = {};
+    for (const c of counts) {
+      if (c._id) countMap[c._id.toString()] = c.count;
+    }
+
+    const defaultPopularGenres = [
+      "Action", "Comedy", "Thriller", "Horror", "Sci-Fi", 
+      "Drama", "Animation", "Romance", "Adventure", "Crime", "Fantasy", "Mystery"
+    ];
+
+    const uniqueSet = new Set<string>([
+      ...rawGenres.filter(Boolean),
+      ...defaultPopularGenres
+    ]);
+
+    return Array.from(uniqueSet).map((name) => ({
+      name,
+      count: countMap[name] || 0
+    }));
+  }
+
+  /**
    * Retrieves a single movie by ID
    */
   public static async getById(id: string): Promise<IMovie> {

@@ -17,6 +17,15 @@ export class MovieController {
     }
   }
 
+  public static async getGenres(_req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const genres = await MovieService.getGenres();
+      sendSuccess(res, genres, "Genres retrieved successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
   public static async getById(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const movie = await MovieService.getById(req.params.id);

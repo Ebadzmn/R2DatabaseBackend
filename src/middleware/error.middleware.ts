@@ -14,11 +14,11 @@ export const errorHandler = (
   let message = "An unexpected internal server error occurred";
   let details: unknown = undefined;
 
-  if (err instanceof AppError) {
-    statusCode = err.statusCode;
-    code = err.code;
+  if (err instanceof AppError || (err as any).isOperational || (err as any).statusCode) {
+    statusCode = (err as any).statusCode || 500;
+    code = (err as any).code || "INTERNAL_ERROR";
     message = err.message;
-    details = err.details;
+    details = (err as any).details;
   } else if (err.name === "CastError") {
     statusCode = 400;
     code = "INVALID_REQUEST";

@@ -7,6 +7,7 @@ const router = Router();
 
 // Public routes for Flutter mobile application or website
 router.get("/", validateRequest(queryMoviesSchema), MovieController.getAll);
+router.get("/genres", MovieController.getGenres);
 router.get("/:id", MovieController.getById);
 router.get("/:id/playback", MovieController.getPlayback);
 router.get("/:id/stream", MovieController.streamHlsProxy);

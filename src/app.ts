@@ -66,6 +66,7 @@ export function createApp(): Express {
   // End-User Mobile Application Routes (CineCore Client)
   app.use("/api/v1/auth", appAuthRoutes);
   app.use("/api/v1/users", appUserRoutes);
+  app.use("/api/v1/movies", publicMovieRoutes);
   app.use("/api/auth", appAuthRoutes);
   app.use("/api/users", appUserRoutes);
 
