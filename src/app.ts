@@ -8,6 +8,8 @@ import uploadRoutes from "./modules/upload/upload.routes";
 import movieRoutes from "./modules/movies/movie.routes";
 import publicMovieRoutes from "./modules/movies/public-movie.routes";
 import tmdbRoutes from "./modules/tmdb/tmdb.routes";
+import { appAuthRoutes, appUserRoutes } from "./modules/app-auth/user.routes";
+import adminUserRoutes from "./modules/app-auth/admin-user.routes";
 import { setupSwagger } from "./config/swagger";
 import { errorHandler } from "./middleware/error.middleware";
 import { apiRateLimiter, authRateLimiter } from "./middleware/rate-limit.middleware";
@@ -58,7 +60,14 @@ export function createApp(): Express {
   app.use("/api/admin/uploads", uploadRoutes);
   app.use("/api/admin/movies", movieRoutes);
   app.use("/api/admin/tmdb", tmdbRoutes);
+  app.use("/api/admin/users", adminUserRoutes);
   app.use("/api/movies", publicMovieRoutes);
+
+  // End-User Mobile Application Routes (CineCore Client)
+  app.use("/api/v1/auth", appAuthRoutes);
+  app.use("/api/v1/users", appUserRoutes);
+  app.use("/api/auth", appAuthRoutes);
+  app.use("/api/users", appUserRoutes);
 
   // 404 Handler
   app.use((req: Request, _res: Response, next: NextFunction) => {

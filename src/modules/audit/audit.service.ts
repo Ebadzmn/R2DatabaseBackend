@@ -5,7 +5,7 @@ import { Types } from "mongoose";
 interface LogAuditParams {
   adminId?: string | Types.ObjectId;
   action: AuditAction;
-  resourceType: "STORAGE" | "MOVIE" | "UPLOAD" | "AUTH";
+  resourceType: "STORAGE" | "MOVIE" | "UPLOAD" | "AUTH" | "USER";
   resourceId?: string;
   metadata?: Record<string, unknown>;
   ipAddress?: string;

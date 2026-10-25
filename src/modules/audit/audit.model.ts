@@ -17,12 +17,15 @@ export type AuditAction =
   | "UPLOAD_STARTED"
   | "UPLOAD_COMPLETED"
   | "UPLOAD_ABORTED"
-  | "UPLOAD_FAILED";
+  | "UPLOAD_FAILED"
+  | "USER_BLOCKED"
+  | "USER_UNBLOCKED"
+  | "USER_DELETED";
 
 export interface IAuditLog extends Document {
   adminId?: Types.ObjectId;
   action: AuditAction;
-  resourceType: "STORAGE" | "MOVIE" | "UPLOAD" | "AUTH";
+  resourceType: "STORAGE" | "MOVIE" | "UPLOAD" | "AUTH" | "USER";
   resourceId?: string;
   metadata?: Record<string, unknown>;
   ipAddress?: string;
