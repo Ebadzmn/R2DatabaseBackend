@@ -8,6 +8,8 @@ import uploadRoutes from "./modules/upload/upload.routes";
 import movieRoutes from "./modules/movies/movie.routes";
 import publicMovieRoutes from "./modules/movies/public-movie.routes";
 import tmdbRoutes from "./modules/tmdb/tmdb.routes";
+import { adminCategoryRouter, publicCategoryRouter } from "./modules/categories/category.routes";
+import { adminGenreRouter, publicGenreRouter } from "./modules/genres/genre.routes";
 import { appAuthRoutes, appUserRoutes } from "./modules/app-auth/user.routes";
 import adminUserRoutes from "./modules/app-auth/admin-user.routes";
 import { setupSwagger } from "./config/swagger";
@@ -61,12 +63,20 @@ export function createApp(): Express {
   app.use("/api/admin/movies", movieRoutes);
   app.use("/api/admin/tmdb", tmdbRoutes);
   app.use("/api/admin/users", adminUserRoutes);
+  app.use("/api/admin/categories", adminCategoryRouter);
+  app.use("/api/admin/genres", adminGenreRouter);
   app.use("/api/movies", publicMovieRoutes);
 
   // End-User Mobile Application Routes (CineCore Client)
   app.use("/api/v1/auth", appAuthRoutes);
   app.use("/api/v1/users", appUserRoutes);
   app.use("/api/v1/movies", publicMovieRoutes);
+  app.use("/api/v1/movies/genres", publicGenreRouter);
+  app.use("/api/v1/categories", publicCategoryRouter);
+  app.use("/api/v1/feed/categories", publicCategoryRouter);
+  app.use("/api/categories", publicCategoryRouter);
+  app.use("/api/v1/genres", publicGenreRouter);
+  app.use("/api/genres", publicGenreRouter);
   app.use("/api/auth", appAuthRoutes);
   app.use("/api/users", appUserRoutes);
 

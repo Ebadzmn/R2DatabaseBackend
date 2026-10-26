@@ -8,6 +8,8 @@ export const createMovieSchema = z.object({
       poster: z.string().nullable().optional(),
       backdrop: z.string().nullable().optional(),
       type: z.enum(["MOVIE", "SERIES"]).default("MOVIE"),
+      category: z.string().nullable().optional(),
+      categoryId: z.string().nullable().optional(),
       releaseYear: z
         .union([z.number(), z.string(), z.null()])
         .optional()
@@ -60,6 +62,8 @@ export const updateMovieSchema = z.object({
       poster: z.string().nullable().optional(),
       backdrop: z.string().nullable().optional(),
       type: z.enum(["MOVIE", "SERIES"]).optional(),
+      category: z.string().nullable().optional(),
+      categoryId: z.string().nullable().optional(),
       releaseYear: z
         .union([z.number(), z.string(), z.null()])
         .optional()
@@ -118,6 +122,7 @@ export const queryMoviesSchema = z.object({
     search: z.string().optional(),
     status: z.enum(["DRAFT", "UPLOADING", "PROCESSING", "READY", "FAILED"]).optional(),
     genre: z.string().optional(),
+    category: z.string().optional(),
     year: z.string().transform(Number).optional(),
     sortBy: z.enum(["createdAt", "title", "releaseYear", "duration"]).default("createdAt"),
     sortOrder: z.enum(["asc", "desc"]).default("desc")

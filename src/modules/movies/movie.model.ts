@@ -38,6 +38,8 @@ export interface IMovie extends Document {
   poster?: string;
   backdrop?: string;
   type: MovieType;
+  category?: string;
+  categoryId?: Types.ObjectId;
   releaseYear?: number;
   genres: string[];
   duration?: number; // In seconds
@@ -107,6 +109,8 @@ const movieSchema = new Schema<IMovie>(
     poster: { type: String, trim: true },
     backdrop: { type: String, trim: true },
     type: { type: String, enum: ["MOVIE", "SERIES"], default: "MOVIE", required: true },
+    category: { type: String, trim: true },
+    categoryId: { type: Schema.Types.ObjectId, ref: "Category" },
     releaseYear: { type: Number },
     genres: [{ type: String, trim: true }],
     duration: { type: Number },
@@ -149,6 +153,8 @@ const movieSchema = new Schema<IMovie>(
 
 movieSchema.index({ slug: 1 });
 movieSchema.index({ status: 1 });
+movieSchema.index({ category: 1 });
+movieSchema.index({ categoryId: 1 });
 movieSchema.index({ genres: 1 });
 movieSchema.index({ releaseYear: 1 });
 movieSchema.index({ title: "text", description: "text" });

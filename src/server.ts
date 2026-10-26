@@ -1,6 +1,8 @@
 import { createApp } from "./app";
 import { connectDatabase, disconnectDatabase } from "./config/database";
 import { AuthService } from "./modules/auth/auth.service";
+import { CategoryService } from "./modules/categories/category.service";
+import { GenreService } from "./modules/genres/genre.service";
 import { env } from "./config/env";
 import { logger } from "./utils/logger";
 import { videoProcessingWorker } from "./workers/video-processing.worker";
@@ -31,6 +33,12 @@ async function bootstrap() {
 
     // 2. Seed default admin if database is empty
     await AuthService.seedInitialAdmin();
+
+    // 2.1 Seed default categories (Movies, Sports, TV Shows, Series, Documentary)
+    await CategoryService.seedDefaultCategories();
+
+    // 2.2 Seed default genres (Action, Comedy, Thriller, Sci-Fi, etc.)
+    await GenreService.seedDefaultGenres();
 
     // 3. Create Express app
     const app = createApp();

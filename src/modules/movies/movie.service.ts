@@ -31,6 +31,20 @@ export class MovieService {
       filter.genres = { $regex: new RegExp(query.genre, "i") };
     }
 
+    if (query.category) {
+      if (Types.ObjectId.isValid(query.category)) {
+        filter.$or = [
+          { categoryId: new Types.ObjectId(query.category) },
+          { category: { $regex: new RegExp(`^${query.category}$`, "i") } }
+        ];
+      } else {
+        filter.$or = [
+          { category: { $regex: new RegExp(`^${query.category}$`, "i") } },
+          { genres: { $regex: new RegExp(query.category, "i") } }
+        ];
+      }
+    }
+
     if (query.year) {
       filter.releaseYear = query.year;
     }
@@ -50,6 +64,7 @@ export class MovieService {
       Movie.find(filter)
         .populate("sourceStorageId", "name bucketName")
         .populate("hlsStorageId", "name bucketName")
+        .populate("categoryId", "name slug icon")
         .sort(sort)
         .skip(skip)
         .limit(limit),
@@ -105,7 +120,8 @@ export class MovieService {
   public static async getById(id: string): Promise<IMovie> {
     const movie = await Movie.findById(id)
       .populate("sourceStorageId", "name bucketName")
-      .populate("hlsStorageId", "name bucketName");
+      .populate("hlsStorageId", "name bucketName")
+      .populate("categoryId", "name slug icon");
 
     if (!movie) {
       throw new NotFoundError("Movie not found", "MOVIE_NOT_FOUND");
@@ -123,6 +139,7 @@ export class MovieService {
 
     const movie = await Movie.create({
       ...input,
+      categoryId: input.categoryId ? new Types.ObjectId(input.categoryId) : undefined,
       slug: uniqueSlug,
       status: "DRAFT"
     });
@@ -148,6 +165,10 @@ export class MovieService {
     if (input.poster !== undefined) movie.poster = input.poster ?? undefined;
     if (input.backdrop !== undefined) movie.backdrop = input.backdrop ?? undefined;
     if (input.type) movie.type = input.type;
+    if (input.category !== undefined) movie.category = input.category ?? undefined;
+    if (input.categoryId !== undefined) {
+      movie.categoryId = input.categoryId ? new Types.ObjectId(input.categoryId) : undefined;
+    }
     if (input.releaseYear !== undefined) movie.releaseYear = input.releaseYear ?? undefined;
     if (input.genres !== undefined) movie.genres = input.genres ?? [];
     if (input.duration !== undefined) movie.duration = input.duration ?? undefined;
