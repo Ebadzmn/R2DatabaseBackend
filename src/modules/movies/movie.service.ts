@@ -27,12 +27,22 @@ export class MovieService {
       filter.status = query.status;
     }
 
+    if (query.type) {
+      filter.type = query.type;
+    }
+
     if (query.genre) {
-      filter.genres = { $regex: new RegExp(query.genre, "i") };
+      if (/^(series|tv-shows|shows|tv)$/i.test(query.genre)) {
+        filter.type = "SERIES";
+      } else {
+        filter.genres = { $regex: new RegExp(query.genre, "i") };
+      }
     }
 
     if (query.category) {
-      if (Types.ObjectId.isValid(query.category)) {
+      if (/^(series|tv-shows|shows|tv)$/i.test(query.category)) {
+        filter.type = "SERIES";
+      } else if (Types.ObjectId.isValid(query.category)) {
         filter.$or = [
           { categoryId: new Types.ObjectId(query.category) },
           { category: { $regex: new RegExp(`^${query.category}$`, "i") } }
@@ -49,12 +59,33 @@ export class MovieService {
       filter.releaseYear = query.year;
     }
 
-    if (query.search) {
-      filter.$text = { $search: query.search };
+    if (query.search && typeof query.search === "string" && query.search.trim().length > 0) {
+      const term = query.search.trim();
+      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const searchRegex = new RegExp(escaped, "i");
+      const searchConditions = [
+        { title: { $regex: searchRegex } },
+        { slug: { $regex: searchRegex } },
+        { description: { $regex: searchRegex } },
+        { genres: { $regex: searchRegex } },
+        { director: { $regex: searchRegex } },
+        { "cast.name": { $regex: searchRegex } },
+        { category: { $regex: searchRegex } }
+      ];
+
+      if (filter.$or) {
+        filter.$and = [
+          { $or: filter.$or },
+          { $or: searchConditions }
+        ];
+        delete filter.$or;
+      } else {
+        filter.$or = searchConditions;
+      }
     }
 
     const sortOrder = query.sortOrder === "asc" ? 1 : -1;
-    const sort: Record<string, 1 | -1> = { [query.sortBy]: sortOrder };
+    const sort: Record<string, 1 | -1> = { isPinned: -1, [query.sortBy]: sortOrder };
 
     const page = Math.max(1, query.page);
     const limit = Math.max(1, Math.min(100, query.limit));
@@ -115,19 +146,143 @@ export class MovieService {
   }
 
   /**
-   * Retrieves a single movie by ID
+   * Retrieves a single movie by ID or slug with full playback links and related movies
    */
-  public static async getById(id: string): Promise<IMovie> {
-    const movie = await Movie.findById(id)
-      .populate("sourceStorageId", "name bucketName")
-      .populate("hlsStorageId", "name bucketName")
-      .populate("categoryId", "name slug icon");
+  public static async getById(id: string): Promise<any> {
+    const isObjectId = Types.ObjectId.isValid(id);
+    let movie: any = null;
+
+    if (isObjectId) {
+      movie = await Movie.findById(id)
+        .populate("sourceStorageId", "name bucketName publicUrl")
+        .populate("hlsStorageId", "name bucketName publicUrl")
+        .populate("categoryId", "name slug icon");
+    }
+
+    if (!movie) {
+      const cleanSlug = id.toLowerCase().replace(/_/g, "-");
+      const titleWithSpaces = id.replace(/[_-]/g, " ");
+      movie = await Movie.findOne({
+        $or: [
+          { slug: id },
+          { slug: cleanSlug },
+          { slug: slugify(id) },
+          { slug: new RegExp(`^${id}$`, "i") },
+          { slug: new RegExp(`^${cleanSlug}`, "i") },
+          { title: new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
+          { title: new RegExp(`^${titleWithSpaces.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
+          { title: new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i") },
+          { title: new RegExp(`^${titleWithSpaces.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i") }
+        ]
+      })
+        .populate("sourceStorageId", "name bucketName publicUrl")
+        .populate("hlsStorageId", "name bucketName publicUrl")
+        .populate("categoryId", "name slug icon");
+    }
 
     if (!movie) {
       throw new NotFoundError("Movie not found", "MOVIE_NOT_FOUND");
     }
 
-    return movie;
+    // Determine public base URL from storage account or environment
+    let baseUrl = env.STREAMING_BASE_URL.replace(/\/+$/, "");
+    if (movie.hlsStorageId) {
+      const storageAccount: any = movie.hlsStorageId?.publicUrl
+        ? movie.hlsStorageId
+        : await StorageAccount.findById(movie.hlsStorageId);
+      if (storageAccount?.publicUrl) {
+        baseUrl = storageAccount.publicUrl.replace(/\/+$/, "");
+      }
+    }
+
+    const cleanMasterKey = movie.hlsMasterKey ? movie.hlsMasterKey.replace(/^\/+/, "") : "";
+    const playbackUrl = cleanMasterKey ? `${baseUrl}/${cleanMasterKey}` : "";
+    const proxyUrl = movie.hlsMasterKey ? `/api/movies/${movie._id.toString()}/stream/master.m3u8` : undefined;
+    const directSourceUrl = movie.sourceObjectKey
+      ? `${baseUrl}/${movie.sourceObjectKey.replace(/^\/+/, "")}`
+      : movie.sourceUrl;
+
+    let primaryWatchUrl = playbackUrl || directSourceUrl || movie.sourceUrl || "";
+
+    // Episodes with playback links
+    const episodesWithPlayback = (movie.episodes || []).map((ep: any) => {
+      const epCleanMaster = ep.hlsMasterKey ? ep.hlsMasterKey.replace(/^\/+/, "") : "";
+      const epPlaybackUrl = epCleanMaster ? `${baseUrl}/${epCleanMaster}` : "";
+      const epProxyUrl = ep.hlsMasterKey
+        ? `/api/movies/${movie._id.toString()}/seasons/${ep.seasonNumber}/episodes/${ep.episodeNumber}/stream/master.m3u8`
+        : undefined;
+      const epSourceUrl = ep.sourceObjectKey
+        ? `${baseUrl}/${ep.sourceObjectKey.replace(/^\/+/, "")}`
+        : ep.sourceUrl;
+      const epWatchUrl = epPlaybackUrl || epSourceUrl || ep.sourceUrl || "";
+
+      if (!primaryWatchUrl && epWatchUrl) {
+        primaryWatchUrl = epWatchUrl;
+      }
+
+      return {
+        ...(ep.toObject ? ep.toObject() : ep),
+        watchUrl: epWatchUrl,
+        playbackUrl: epPlaybackUrl,
+        proxyUrl: epProxyUrl,
+        sourceUrl: epSourceUrl
+      };
+    });
+
+    // Calculate More Like This (movies from same category or sharing genres)
+    const genreList = Array.isArray(movie.genres) ? movie.genres : [];
+    const moreLikeThisFilter: any = {
+      _id: { $ne: movie._id },
+      status: { $in: ["READY", "DRAFT", "PROCESSING"] }
+    };
+
+    if (movie.categoryId) {
+      moreLikeThisFilter.$or = [
+        { categoryId: movie.categoryId._id || movie.categoryId },
+        { category: movie.category },
+        { genres: { $in: genreList } }
+      ];
+    } else if (movie.category) {
+      moreLikeThisFilter.$or = [
+        { category: movie.category },
+        { genres: { $in: genreList } }
+      ];
+    } else if (genreList.length > 0) {
+      moreLikeThisFilter.genres = { $in: genreList };
+    }
+
+    let moreLikeThis = await Movie.find(moreLikeThisFilter)
+      .limit(10)
+      .select("title slug description poster backdrop rating releaseYear duration genres category categoryId resolution status");
+
+    if (moreLikeThis.length < 6) {
+      const excludeIds = [movie._id, ...moreLikeThis.map((m: any) => m._id)];
+      const supplemental = await Movie.find({ _id: { $nin: excludeIds } })
+        .limit(10 - moreLikeThis.length)
+        .select("title slug description poster backdrop rating releaseYear duration genres category categoryId resolution status");
+      moreLikeThis = [...moreLikeThis, ...supplemental];
+    }
+
+    const movieObj = movie.toObject ? movie.toObject() : movie;
+
+    return {
+      ...movieObj,
+      id: movie._id.toString(),
+      watchUrl: primaryWatchUrl,
+      playbackUrl: playbackUrl || primaryWatchUrl,
+      proxyUrl,
+      sourceUrl: directSourceUrl || movie.sourceUrl,
+      playback: {
+        type: movie.hlsMasterKey ? "HLS" : "MP4",
+        url: primaryWatchUrl,
+        proxyUrl,
+        sourceUrl: directSourceUrl,
+        duration: movie.duration
+      },
+      episodes: episodesWithPlayback,
+      moreLikeThis,
+      relatedMovies: moreLikeThis
+    };
   }
 
   /**
@@ -181,7 +336,25 @@ export class MovieService {
     if (input.episodes !== undefined && input.episodes !== null) movie.episodes = input.episodes;
     if (input.status) movie.status = input.status;
     if (input.screenshots !== undefined) movie.screenshots = input.screenshots ?? [];
+    if (input.isPinned !== undefined) {
+      movie.isPinned = input.isPinned;
+      movie.pinnedAt = input.isPinned ? new Date() : undefined;
+    }
 
+    await movie.save();
+    return movie;
+  }
+
+  public static async togglePin(id: string): Promise<IMovie> {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestError("Invalid movie ID");
+    }
+    const movie = await Movie.findById(id);
+    if (!movie) {
+      throw new NotFoundError("Movie/Series not found", "MOVIE_NOT_FOUND");
+    }
+    movie.isPinned = !movie.isPinned;
+    movie.pinnedAt = movie.isPinned ? new Date() : undefined;
     await movie.save();
     return movie;
   }

@@ -12,6 +12,9 @@ import { adminCategoryRouter, publicCategoryRouter } from "./modules/categories/
 import { adminGenreRouter, publicGenreRouter } from "./modules/genres/genre.routes";
 import { appAuthRoutes, appUserRoutes } from "./modules/app-auth/user.routes";
 import adminUserRoutes from "./modules/app-auth/admin-user.routes";
+import adminContentRoutes from "./modules/content/content.routes";
+import publicFeedRoutes from "./modules/content/public-feed.routes";
+import searchRoutes from "./modules/search/search.routes";
 import { setupSwagger } from "./config/swagger";
 import { errorHandler } from "./middleware/error.middleware";
 import { apiRateLimiter, authRateLimiter } from "./middleware/rate-limit.middleware";
@@ -65,6 +68,8 @@ export function createApp(): Express {
   app.use("/api/admin/users", adminUserRoutes);
   app.use("/api/admin/categories", adminCategoryRouter);
   app.use("/api/admin/genres", adminGenreRouter);
+  app.use("/api/admin/content", adminContentRoutes);
+  app.use("/api/admin", adminContentRoutes);
   app.use("/api/movies", publicMovieRoutes);
 
   // End-User Mobile Application Routes (CineCore Client)
@@ -72,11 +77,15 @@ export function createApp(): Express {
   app.use("/api/v1/users", appUserRoutes);
   app.use("/api/v1/movies", publicMovieRoutes);
   app.use("/api/v1/movies/genres", publicGenreRouter);
+  app.use("/api/v1/feed", publicFeedRoutes);
+  app.use("/api/feed", publicFeedRoutes);
   app.use("/api/v1/categories", publicCategoryRouter);
   app.use("/api/v1/feed/categories", publicCategoryRouter);
   app.use("/api/categories", publicCategoryRouter);
   app.use("/api/v1/genres", publicGenreRouter);
   app.use("/api/genres", publicGenreRouter);
+  app.use("/api/v1/search", searchRoutes);
+  app.use("/api/search", searchRoutes);
   app.use("/api/auth", appAuthRoutes);
   app.use("/api/users", appUserRoutes);
 

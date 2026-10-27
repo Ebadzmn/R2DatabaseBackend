@@ -46,7 +46,8 @@ export const createMovieSchema = z.object({
           return isNaN(num) ? undefined : num;
         }),
       screenshots: z.array(z.string()).nullable().optional(),
-      cast: z.array(z.any()).nullable().optional()
+      cast: z.array(z.any()).nullable().optional(),
+      isPinned: z.boolean().optional()
     })
     .passthrough()
 });
@@ -110,7 +111,8 @@ export const updateMovieSchema = z.object({
           return isNaN(num) ? undefined : num;
         }),
       episodes: z.array(z.any()).nullable().optional(),
-      status: z.enum(["DRAFT", "UPLOADING", "PROCESSING", "READY", "FAILED"]).optional()
+      status: z.enum(["DRAFT", "UPLOADING", "PROCESSING", "READY", "FAILED"]).optional(),
+      isPinned: z.boolean().optional()
     })
     .passthrough()
 });
@@ -121,6 +123,7 @@ export const queryMoviesSchema = z.object({
     limit: z.string().transform(Number).default("10"),
     search: z.string().optional(),
     status: z.enum(["DRAFT", "UPLOADING", "PROCESSING", "READY", "FAILED"]).optional(),
+    type: z.enum(["MOVIE", "SERIES"]).optional(),
     genre: z.string().optional(),
     category: z.string().optional(),
     year: z.string().transform(Number).optional(),

@@ -35,6 +35,38 @@ export class MovieController {
     }
   }
 
+  public static async getRelated(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const movie = await MovieService.getById(req.params.id);
+      sendSuccess(res, movie.moreLikeThis || []);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public static async getCastCrew(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const movie = await MovieService.getById(req.params.id);
+      sendSuccess(res, movie.cast || []);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public static async getGallery(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const movie = await MovieService.getById(req.params.id);
+      const gallery = (movie.screenshots || []).map((s: string, idx: number) => ({
+        title: `Scene #${idx + 1}`,
+        imageUrl: s,
+        tag: movie.resolution || "4K Ultra HD"
+      }));
+      sendSuccess(res, gallery);
+    } catch (error) {
+      next(error);
+    }
+  }
+
   public static async create(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const movie = await MovieService.create(req.body);
@@ -68,6 +100,15 @@ export class MovieController {
       });
 
       sendSuccess(res, movie, "Movie updated successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public static async togglePin(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const movie = await MovieService.togglePin(req.params.id);
+      sendSuccess(res, movie, movie.isPinned ? "Pinned to top successfully" : "Unpinned successfully");
     } catch (error) {
       next(error);
     }

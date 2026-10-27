@@ -63,6 +63,8 @@ export interface IMovie extends Document {
   processingProgress?: number;
   processingError?: string;
   screenshots?: string[];
+  isPinned?: boolean;
+  pinnedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -144,7 +146,9 @@ const movieSchema = new Schema<IMovie>(
     },
     processingProgress: { type: Number, default: 0 },
     processingError: { type: String },
-    screenshots: { type: [String], default: [] }
+    screenshots: { type: [String], default: [] },
+    isPinned: { type: Boolean, default: false, index: true },
+    pinnedAt: { type: Date }
   },
   {
     timestamps: true
@@ -153,6 +157,7 @@ const movieSchema = new Schema<IMovie>(
 
 movieSchema.index({ slug: 1 });
 movieSchema.index({ status: 1 });
+movieSchema.index({ isPinned: -1, createdAt: -1 });
 movieSchema.index({ category: 1 });
 movieSchema.index({ categoryId: 1 });
 movieSchema.index({ genres: 1 });

@@ -17,6 +17,7 @@ router.get("/genres", MovieController.getGenres);
 router.get("/:id", MovieController.getById);
 router.post("/", validateRequest(createMovieSchema), MovieController.create);
 router.patch("/:id", validateRequest(updateMovieSchema), MovieController.update);
+router.patch("/:id/pin", MovieController.togglePin);
 router.delete("/:id", MovieController.delete);
 
 router.post("/:id/process", MovieController.process);
