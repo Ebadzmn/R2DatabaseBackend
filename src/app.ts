@@ -12,9 +12,14 @@ import { adminCategoryRouter, publicCategoryRouter } from "./modules/categories/
 import { adminGenreRouter, publicGenreRouter } from "./modules/genres/genre.routes";
 import { appAuthRoutes, appUserRoutes } from "./modules/app-auth/user.routes";
 import adminUserRoutes from "./modules/app-auth/admin-user.routes";
+import path from "path";
 import adminContentRoutes from "./modules/content/content.routes";
 import publicFeedRoutes from "./modules/content/public-feed.routes";
 import searchRoutes from "./modules/search/search.routes";
+import playbackRoutes from "./modules/playback/playback.routes";
+import watchlistRoutes from "./modules/watchlist/watchlist.routes";
+import { communityRouter, adminCommunityRouter } from "./modules/community/community.routes";
+import { publicSystemRouter, adminSystemRouter } from "./modules/system/system.routes";
 import { setupSwagger } from "./config/swagger";
 import { errorHandler } from "./middleware/error.middleware";
 import { apiRateLimiter, authRateLimiter } from "./middleware/rate-limit.middleware";
@@ -59,6 +64,9 @@ export function createApp(): Express {
     });
   });
 
+  // Static file serving for uploads (avatars, community images)
+  app.use("/uploads", express.static(path.join(process.cwd(), "public", "uploads")));
+
   // Mount Application Routes
   app.use("/api/admin/auth", authRoutes);
   app.use("/api/admin/storage", storageRoutes);
@@ -69,16 +77,22 @@ export function createApp(): Express {
   app.use("/api/admin/categories", adminCategoryRouter);
   app.use("/api/admin/genres", adminGenreRouter);
   app.use("/api/admin/content", adminContentRoutes);
+  app.use("/api/admin/community", adminCommunityRouter);
+  app.use("/api/admin/system", adminSystemRouter);
   app.use("/api/admin", adminContentRoutes);
   app.use("/api/movies", publicMovieRoutes);
 
   // End-User Mobile Application Routes (CineCore Client)
+  app.use("/api/v1/system", publicSystemRouter);
+  app.use("/api/system", publicSystemRouter);
   app.use("/api/v1/auth", appAuthRoutes);
   app.use("/api/v1/users", appUserRoutes);
   app.use("/api/v1/movies", publicMovieRoutes);
   app.use("/api/v1/movies/genres", publicGenreRouter);
   app.use("/api/v1/feed", publicFeedRoutes);
   app.use("/api/feed", publicFeedRoutes);
+  app.use("/api/v1/community", communityRouter);
+  app.use("/api/community", communityRouter);
   app.use("/api/v1/categories", publicCategoryRouter);
   app.use("/api/v1/feed/categories", publicCategoryRouter);
   app.use("/api/categories", publicCategoryRouter);
@@ -86,6 +100,10 @@ export function createApp(): Express {
   app.use("/api/genres", publicGenreRouter);
   app.use("/api/v1/search", searchRoutes);
   app.use("/api/search", searchRoutes);
+  app.use("/api/v1/playback", playbackRoutes);
+  app.use("/api/playback", playbackRoutes);
+  app.use("/api/v1/watchlist", watchlistRoutes);
+  app.use("/api/watchlist", watchlistRoutes);
   app.use("/api/auth", appAuthRoutes);
   app.use("/api/users", appUserRoutes);
 

@@ -30,7 +30,6 @@ const genreSchema = new Schema<IGenre>(
   }
 );
 
-genreSchema.index({ slug: 1 });
 genreSchema.index({ order: 1 });
 genreSchema.index({ isActive: 1 });
 

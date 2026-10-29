@@ -26,7 +26,6 @@ const categorySchema = new Schema<ICategory>(
   }
 );
 
-categorySchema.index({ slug: 1 });
 categorySchema.index({ order: 1 });
 categorySchema.index({ isActive: 1 });
 
